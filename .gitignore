@@ -1,0 +1,30 @@
+# Python
+__pycache__/
+*.py[cod]
+.venv/
+venv/
+.pytest_cache/
+
+# Personal/private data - real financial data, real settings, real rules
+# (only the .template.xlsx versions of the rule workbooks are committed)
+config/settings.yaml
+input/
+output/
+rules/budgeting/TransactionRules.xlsx
+rules/investments/InstrumentMaster.xlsx
+
+# Timestamped backups made while editing rule workbooks
+rules/**/*_backup_*.xlsx
+
+# Historical development log - kept locally, not published
+docs/patch_notes/
+
+# Excel lock files
+~$*.xlsx
+~$*.xlsm
+
+# OS/editor files
+.DS_Store
+Thumbs.db
+.vscode/
+.idea/

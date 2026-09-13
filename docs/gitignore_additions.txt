@@ -1,0 +1,11 @@
+# Finance parser local/private files
+config/settings.yaml
+rules/budgeting/TransactionRules.xlsx
+rules/investments/InstrumentMaster.xlsx
+input/
+output/
+
+# Python/runtime
+__pycache__/
+*.pyc
+.pytest_cache/

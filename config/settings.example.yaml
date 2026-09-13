@@ -1,0 +1,69 @@
+# Example settings for finance_parser.
+#
+# Copy this file to:
+#
+#   config/settings.yaml
+#
+# and edit the values for your own accounts/workbook.
+#
+# config/settings.yaml should normally be gitignored because it may contain
+# personal account labels, owner names, and workflow assumptions.
+
+project:
+  name: "Finance parser"
+  locale: "fi_FI"
+  default_currency: "EUR"
+
+paths:
+  budgeting_input: "input/budgeting"
+  budgeting_output: "output/budgeting/ParsedTransactions.xlsx"
+  budgeting_rules: "rules/budgeting/TransactionRules.xlsx"
+
+  investment_input: "input/investments"
+  investment_output: "output/investments/ParsedInvestments.xlsx"
+  investment_rules: "rules/investments/InstrumentMaster.xlsx"
+
+budgeting:
+  default_include: "YES"
+
+  source_bank_aliases:
+    "BANK NORWEGIAN": "NORWEGIAN"
+    "S-PANKKI": "SPANKKI"
+    "SPK": "SPANKKI"
+
+  source_account_inference:
+    OP:
+      # Prefixes are checked against export filenames.
+      # Example:
+      #   HOUSEHOLD_tapahtumat20260503-20260603.csv -> HOUSEHOLD
+      #
+      # Replace these public example labels in config/settings.yaml with your
+      # own private account labels.
+      filename_prefixes:
+        HOUSEHOLD: "HOUSEHOLD"
+        PERSONAL: "PERSONAL"
+        CHILD: "CHILD"
+
+    NORWEGIAN:
+      fixed_source_account: "NORWEGIAN"
+
+    NORDEA:
+      # Public placeholder. Override in config/settings.yaml if this bank export
+      # belongs to a specific person/account in your own workbook.
+      fixed_source_account: "PERSONAL"
+
+    SPANKKI:
+      fixed_source_account: "SPANKKI"
+      default_include: "NO"
+
+investments:
+  broker_defaults:
+    EVLI:
+      # Example policy: this export may contain one fixed instrument even when
+      # the export column named "Instrument" contains plan/program labels such
+      # as "Plan Cycle 2023" or "SIS Dividend".
+      fixed_instrument_name: "NOKIA"
+      portfolio_from_export_column: "Instrument"
+
+    SELIGSON:
+      instrument_name_template: "SELIGSON {portfolio}"
