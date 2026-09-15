@@ -1,9 +1,13 @@
+import shutil
 from pathlib import Path
 
+import pandas as pd
 import pytest
 
 from investments.parsers import nordnet, seligson, evli, op_investment
 from finance_parser import settings as settings_module
+from finance_parser.investments.investment_common import INVESTMENT_IMPORT_LOG_SHEET
+from finance_parser.investments.investment_parser import append_to_output
 from finance_parser.settings import AppSettings
 
 
@@ -116,3 +120,37 @@ investments:
         assert seligson_df.iloc[0]["InstrumentName"] == "CUSTOM FUND 58258"
     finally:
         settings_module._SETTINGS_CACHE = old_cache
+
+
+def test_append_to_output_reports_per_file_new_and_duplicate_counts(tmp_path):
+    """
+    Real bug: RowsNew/RowsDuplicate were computed once for the whole run and
+    broadcast into every file's ImportLog row (same bug already fixed on the
+    budgeting side - see transaction_parser.py). A run over two 1-row files
+    must show RowsNew=1 (not 2) for each file on first import, and
+    RowsDuplicate=1 (not 2) for each file on a rerun where nothing is new.
+    """
+    input_dir = tmp_path / "input"
+    input_dir.mkdir()
+    shutil.copy(FIXTURES / "nordnet_sample.csv", input_dir / "nordnet_sample.csv")
+    shutil.copy(FIXTURES / "seligson_sample.xlsx", input_dir / "seligson_sample.xlsx")
+
+    output_path = tmp_path / "ParsedInvestments.xlsx"
+
+    append_to_output(input_dir, output_path, None)
+
+    log = pd.read_excel(output_path, sheet_name=INVESTMENT_IMPORT_LOG_SHEET, dtype=object)
+    first_run_id = log["ImportRunID"].iloc[0]
+    first_run = log[log["ImportRunID"] == first_run_id]
+    new_by_file = dict(zip(first_run["SourceFile"], first_run["RowsNew"]))
+    assert new_by_file["nordnet_sample.csv"] == 1
+    assert new_by_file["seligson_sample.xlsx"] == 1
+
+    append_to_output(input_dir, output_path, None)
+
+    log2 = pd.read_excel(output_path, sheet_name=INVESTMENT_IMPORT_LOG_SHEET, dtype=object)
+    second_run_id = log2["ImportRunID"].iloc[-1]
+    second_run = log2[log2["ImportRunID"] == second_run_id]
+    duplicate_by_file = dict(zip(second_run["SourceFile"], second_run["RowsDuplicate"]))
+    assert duplicate_by_file["nordnet_sample.csv"] == 1
+    assert duplicate_by_file["seligson_sample.xlsx"] == 1

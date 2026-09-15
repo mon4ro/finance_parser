@@ -247,10 +247,38 @@ def append_to_output(input_path: Path, output_path: Path, instrument_master_path
 
     rows_read = len(imported_raw)
     rows_new = len(new_raw)
-    rows_duplicate = rows_read - rows_new
 
-    import_log_new["RowsNew"] = rows_new
-    import_log_new["RowsDuplicate"] = rows_duplicate
+    # Fill file-level new/duplicate counts into the log.
+    #
+    # Earlier versions wrote the whole-run RowsNew/RowsDuplicate totals into
+    # every file's import-log row (same bug already fixed on the budgeting
+    # side - see transaction_parser.py). That made every file in a run
+    # appear to have contributed the same number of new/duplicate rows as
+    # the run as a whole, which is impossible whenever a run touches more
+    # than one file (e.g. a file with 77 RowsRead showing 679 duplicates).
+    is_new_mask = ~imported_raw["InvestmentRawID"].astype(str).isin(existing_raw_ids)
+    file_counts = (
+        imported_raw.assign(_IsNew=is_new_mask)
+        .groupby("SourceFile", dropna=False)["_IsNew"]
+        .agg(["count", "sum"])
+        .reset_index()
+    )
+    file_count_lookup = {
+        str(row["SourceFile"]): {
+            "RowsNew": int(row["sum"]),
+            "RowsDuplicate": int(row["count"] - row["sum"]),
+        }
+        for _, row in file_counts.iterrows()
+    }
+
+    for idx, log_row in import_log_new.iterrows():
+        source_file = str(log_row.get("SourceFile", ""))
+        counts = file_count_lookup.get(source_file)
+        if counts is None:
+            continue
+        import_log_new.at[idx, "RowsNew"] = counts["RowsNew"]
+        import_log_new.at[idx, "RowsDuplicate"] = counts["RowsDuplicate"]
+
     import_log_new["Status"] = "Imported"
 
     combined_log = pd.concat([existing_log, import_log_new], ignore_index=True)
