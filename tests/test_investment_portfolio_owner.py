@@ -47,7 +47,7 @@ budgeting:
 
 investments:
   portfolio_owners:
-    EVLI: "AARO"
+    EVLI: "PERSON_A"
   portfolio_types:
     EVLI: "Arvo-osuustili"
 """,
@@ -61,7 +61,7 @@ investments:
         raw = _raw_row(Broker="EVLI", Portfolio="Plan Cycle 2023", PortfolioOwner="", PortfolioType="")
         result = raw_to_investment_transactions(raw)
 
-        assert result.iloc[0]["PortfolioOwner"] == "AARO"
+        assert result.iloc[0]["PortfolioOwner"] == "PERSON_A"
         assert result.iloc[0]["PortfolioType"] == "ARVO-OSUUSTILI"
     finally:
         settings_module._SETTINGS_CACHE = old_cache
@@ -95,7 +95,7 @@ budgeting:
 
 investments:
   portfolio_owners:
-    EVLI: "AARO"
+    EVLI: "PERSON_A"
 """,
         tmp_path,
     )
@@ -104,10 +104,10 @@ investments:
     try:
         settings_module._SETTINGS_CACHE = loaded
 
-        raw = _raw_row(Broker="EVLI", Portfolio="Plan Cycle 2023", PortfolioOwner="TUULI", PortfolioType="")
+        raw = _raw_row(Broker="EVLI", Portfolio="Plan Cycle 2023", PortfolioOwner="PERSON_B", PortfolioType="")
         result = raw_to_investment_transactions(raw)
 
-        assert result.iloc[0]["PortfolioOwner"] == "TUULI"
+        assert result.iloc[0]["PortfolioOwner"] == "PERSON_B"
     finally:
         settings_module._SETTINGS_CACHE = old_cache
 
@@ -181,7 +181,7 @@ budgeting:
 
 investments:
   portfolio_owners:
-    EVLI: "AARO"
+    EVLI: "PERSON_A"
   portfolio_types:
     EVLI: "Arvo-osuustili"
 """,
@@ -198,7 +198,7 @@ investments:
 
         result = apply_portfolio_ownership(transactions)
 
-        assert result.iloc[0]["PortfolioOwner"] == "AARO"
+        assert result.iloc[0]["PortfolioOwner"] == "PERSON_A"
         assert result.iloc[0]["PortfolioType"] == "ARVO-OSUUSTILI"
     finally:
         settings_module._SETTINGS_CACHE = old_cache
@@ -227,7 +227,7 @@ budgeting:
 
 investments:
   portfolio_owners:
-    EVLI: "AARO"
+    EVLI: "PERSON_A"
 """,
         tmp_path,
     )
@@ -237,11 +237,11 @@ investments:
         settings_module._SETTINGS_CACHE = loaded
 
         existing_row = {col: "" for col in INVESTMENT_TRANSACTIONS_COLUMNS}
-        existing_row.update({"Broker": "EVLI", "Portfolio": "Plan Cycle 2023", "PortfolioOwner": "TUULI"})
+        existing_row.update({"Broker": "EVLI", "Portfolio": "Plan Cycle 2023", "PortfolioOwner": "PERSON_B"})
         transactions = pd.DataFrame([existing_row], columns=INVESTMENT_TRANSACTIONS_COLUMNS)
 
         result = apply_portfolio_ownership(transactions)
 
-        assert result.iloc[0]["PortfolioOwner"] == "TUULI"
+        assert result.iloc[0]["PortfolioOwner"] == "PERSON_B"
     finally:
         settings_module._SETTINGS_CACHE = old_cache

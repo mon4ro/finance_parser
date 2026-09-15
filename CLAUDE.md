@@ -127,3 +127,31 @@ normaliser → categoriser chain and its own outputs
 A legacy `--write-mode openpyxl-mutating` exists for the categoriser but is
 flagged in its own help text as legacy/prone to Excel repair warnings — not
 a safe alternative for avoiding the regeneration risk.
+
+## No personal information in committed files
+
+Real names (household members, anyone else) and other personal information
+(emails, phone numbers, addresses, real account numbers) must never appear
+in any file that gets `git add`ed — code, tests, fixtures, docs, comments,
+commit messages. This repo is public/shareable; real names belong only in
+gitignored files (`config/settings.yaml`, `rules/*.xlsx`, `docs/patch_notes/`).
+
+Use generic placeholders instead: `PERSON_A`/`PERSON_B`/`SHARED` for people
+(matching `SOURCE_TO_DEFAULT_OWNER` in `common.py`), `HOUSEHOLD`/`PERSONAL`/
+`CHILD` for account labels (matching `settings.example.yaml`).
+
+**Watch for indirect leaks, not just literal typing:** a real name can enter
+a committed file without ever being typed there directly —
+- Copying a real value into a **test fixture** while writing a test for
+  settings-driven behavior (happened once: a real name ended up in
+  `tests/test_investment_portfolio_owner.py` as a stand-in "some owner"
+  value while testing `portfolio_owner()`/`portfolio_type()`).
+- Adding an example value to `config/settings.example.yaml` under a key
+  (e.g. a broker name) that also exists as a real key the user's own
+  gitignored `config/settings.yaml` doesn't happen to override — the
+  example value silently deep-merges into their real settings and can then
+  leak into real output data. Prefer an empty placeholder (`{}`) over a
+  real-looking example value for any settings key where this is possible.
+
+Before committing anything new, grep the diff for known real names as a
+final check, not just at initial repo setup.
