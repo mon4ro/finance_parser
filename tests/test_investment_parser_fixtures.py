@@ -4,7 +4,7 @@ from pathlib import Path
 import pandas as pd
 import pytest
 
-from investments.parsers import nordnet, seligson, evli, op_investment
+from investments.parsers import nordnet, seligson, evli, op_investment, coinmotion
 from finance_parser import settings as settings_module
 from finance_parser.investments.investment_common import INVESTMENT_IMPORT_LOG_SHEET
 from finance_parser.investments.investment_parser import append_to_output
@@ -72,6 +72,45 @@ def test_op_investment_fixture_parses_dividend():
     assert row["InstrumentName"] == "NOKIA OYJ"
     assert row["TransactionTypeRaw"] == "OSINKO"
     assert row["CashAmount"] == 13.92
+
+
+def test_coinmotion_fixture_parses_deposit_and_buy():
+    path = FIXTURES / "coinmotion_sample.csv"
+    ok, reason = coinmotion.can_parse(path)
+    assert ok, reason
+
+    df = coinmotion.parse_file(path, "2026-06-04 12:00:00")
+
+    deposit = df.iloc[0]
+    assert deposit["Broker"] == "COINMOTION"
+    assert deposit["TransactionTypeRaw"] == "DEPOSIT"
+    assert deposit["InstrumentName"] == ""
+    assert deposit["CashAmount"] == 1000.0
+    assert deposit["TradeDate"] == "2026-03-01"
+
+    buy = df.iloc[1]
+    assert buy["TransactionTypeRaw"] == "BUY"
+    assert buy["InstrumentName"] == "BTC"
+    assert buy["Quantity"] == 0.02
+    # Total EUR debited is eurAmount (fee-inclusive), not rate*quantity.
+    assert buy["CashAmount"] == -1000.0
+    assert buy["BrokerageFee"] == 20.0
+
+
+def test_coinmotion_fixture_parses_sell_direction_from_currency_pair():
+    """
+    "market_trade" alone doesn't say which side is being sold - direction
+    must come from which currency is EUR (fromCurrency=EUR -> BUY,
+    toCurrency=EUR -> SELL).
+    """
+    path = FIXTURES / "coinmotion_sample.csv"
+    df = coinmotion.parse_file(path, "2026-06-04 12:00:00")
+
+    sell = df.iloc[2]
+    assert sell["TransactionTypeRaw"] == "SELL"
+    assert sell["InstrumentName"] == "BTC"
+    assert sell["Quantity"] == 0.01
+    assert sell["CashAmount"] == 510.0
 
 
 def test_investment_policy_can_change_through_settings(tmp_path):

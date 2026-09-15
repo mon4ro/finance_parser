@@ -22,7 +22,7 @@ from finance_parser.investments.investment_common import (
     write_investment_output_workbook,
 )
 
-from finance_parser.investments.parsers import nordnet, seligson, evli, op_investment
+from finance_parser.investments.parsers import nordnet, seligson, evli, op_investment, coinmotion
 
 
 PROJECT_ROOT = Path(__file__).resolve().parents[2]
@@ -38,6 +38,7 @@ SUPPORTED_INVESTMENT_PARSERS = [
     seligson,
     evli,
     op_investment,
+    coinmotion,
 ]
 
 
