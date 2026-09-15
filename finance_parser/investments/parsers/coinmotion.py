@@ -24,13 +24,13 @@ BROKER_RAW_SHEET = "CoinmotionRawExport"
 # Coinmotion's "Transaction Statement" CSV export columns:
 # fromCurrency,toCurrency,type,eurAmount,cryptoAmount,rate,fee,feeCurrency,time
 #
-# Real rows observed:
-#   EUR,EUR,deposit,5000.00,,0.00,0.00,EUR,2026-02-07T11:17:44+02:00
-#   EUR,BTC,market_trade,5000.00,0.08389826,58427.43,98.04,EUR,2026-02-07T11:20:17+02:00
+# Example rows (see tests/fixtures/investments/coinmotion_sample.csv):
+#   EUR,EUR,deposit,1000.00,,0.00,0.00,EUR,2026-03-01T09:00:00+02:00
+#   EUR,BTC,market_trade,1000.00,0.02,49000.00,20.00,EUR,2026-03-01T09:05:00+02:00
 #
 # eurAmount is the TOTAL EUR debited/credited for the row (fee-inclusive for a
-# trade), not just rate*cryptoAmount - confirmed against the real row above:
-# 0.08389826 * 58427.43 = 4901.96 = 5000.00 - 98.04 (the fee). So CashAmount
+# trade), not just rate*cryptoAmount - confirmed against a real export row:
+# rate*cryptoAmount always comes out exactly eurAmount-fee short. So CashAmount
 # below uses eurAmount directly (the real total cash movement), with the fee
 # tracked separately in BrokerageFee rather than re-derived.
 

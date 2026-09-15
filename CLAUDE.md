@@ -128,24 +128,45 @@ A legacy `--write-mode openpyxl-mutating` exists for the categoriser but is
 flagged in its own help text as legacy/prone to Excel repair warnings — not
 a safe alternative for avoiding the regeneration risk.
 
-## No personal information in committed files
+## No personal or real financial data in committed files
 
-Real names (household members, anyone else) and other personal information
-(emails, phone numbers, addresses, real account numbers) must never appear
-in any file that gets `git add`ed — code, tests, fixtures, docs, comments,
-commit messages. This repo is public/shareable; real names belong only in
-gitignored files (`config/settings.yaml`, `rules/*.xlsx`, `docs/patch_notes/`).
+This repo is public. Nothing that identifies a person, or that reveals a
+real number from this household's actual finances, may appear in any file
+that gets `git add`ed — code, tests, fixtures, docs, comments, commit
+messages. Two distinct categories, both forbidden:
 
-Use generic placeholders instead: `PERSON_A`/`PERSON_B`/`SHARED` for people
-(matching `SOURCE_TO_DEFAULT_OWNER` in `common.py`), `HOUSEHOLD`/`PERSONAL`/
-`CHILD` for account labels (matching `settings.example.yaml`).
+- **Personal info:** real names (household members, anyone else), emails,
+  phone numbers, addresses, real account numbers. Use generic placeholders
+  instead: `PERSON_A`/`PERSON_B`/`SHARED` for people (matching
+  `SOURCE_TO_DEFAULT_OWNER` in `common.py`), `HOUSEHOLD`/`PERSONAL`/`CHILD`
+  for account labels (matching `settings.example.yaml`).
+- **Real transaction data:** an actual amount, date, quantity, price, or
+  rate copied from a real run or a real input file — even with no name
+  attached, a real number ties a real event to this household's real
+  finances. Every number in code comments, docstrings, and test fixtures
+  must be invented, never copied from real output. This class of leak is
+  more central to a *finance* tool than the personal-info case above and
+  needs the same level of care: it's easy to paste an actual observed value
+  into a comment mid-explanation ("confirmed against the real row above:
+  ...") without registering that it's real household data. When writing a
+  comment or docstring that explains real data shape/behavior, use the same
+  synthetic numbers already in the corresponding test fixture (or invent new
+  ones) — never the actual values observed while testing against real data,
+  even to illustrate a genuinely real relationship (e.g. "eurAmount is
+  fee-inclusive, confirmed against real data" is fine to say; pasting the
+  real row that proved it is not).
 
-**Watch for indirect leaks, not just literal typing:** a real name can enter
-a committed file without ever being typed there directly —
+Real names/data belong only in gitignored files (`config/settings.yaml`,
+`rules/*.xlsx`, `output/*.xlsx`, `docs/patch_notes/`) or in the terminal/chat
+transcript with the user — never in a file about to be `git add`ed.
+
+**Watch for indirect leaks, not just literal typing:**
 - Copying a real value into a **test fixture** while writing a test for
   settings-driven behavior (happened once: a real name ended up in
-  `tests/test_investment_portfolio_owner.py` as a stand-in "some owner"
-  value while testing `portfolio_owner()`/`portfolio_type()`).
+  `tests/test_investment_portfolio_owner.py` as a stand-in owner value).
+- Pasting a **real observed value into an explanatory code comment** while
+  documenting how a parser handles real data (happened once, in a parser's
+  header comment — don't do this again).
 - Adding an example value to `config/settings.example.yaml` under a key
   (e.g. a broker name) that also exists as a real key the user's own
   gitignored `config/settings.yaml` doesn't happen to override — the
@@ -153,5 +174,7 @@ a committed file without ever being typed there directly —
   leak into real output data. Prefer an empty placeholder (`{}`) over a
   real-looking example value for any settings key where this is possible.
 
-Before committing anything new, grep the diff for known real names as a
-final check, not just at initial repo setup.
+Before committing anything new, re-read every comment/docstring touched in
+the diff and ask "is this number invented, or did I copy it from a real
+run/file?" — not just grep for known real names. Do this on every commit,
+not just at initial repo setup.
