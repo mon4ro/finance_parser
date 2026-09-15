@@ -67,3 +67,23 @@ investments:
 
     SELIGSON:
       instrument_name_template: "SELIGSON {portfolio}"
+
+  # Which household member each Broker/Portfolio belongs to. A plain string
+  # applies to every portfolio under that broker; a mapping from Portfolio to
+  # value lets one broker hold accounts for more than one person (with an
+  # optional "default" key as a broker-wide fallback). Account-level fact,
+  # not a content-based rule, so it lives here rather than in
+  # InstrumentMaster.xlsx - same reasoning as Owner on the budgeting side.
+  portfolio_owners:
+    EVLI: "PERSONAL"
+    NORDNET:
+      "20429585": "PERSONAL"
+      default: "HOUSEHOLD"
+
+  # Account wrapper type, e.g. a taxable custody account vs. a tax-advantaged
+  # equity savings account vs. a crypto wallet. Same lookup shape as
+  # portfolio_owners above - deliberately no example value here, since
+  # config/settings.yaml only overrides keys it sets, and any value entered
+  # here would otherwise silently leak into every deployment that doesn't
+  # explicitly override this broker's PortfolioType.
+  portfolio_types: {}

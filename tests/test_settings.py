@@ -55,3 +55,69 @@ def test_settings_investment_broker_defaults():
 
     assert settings.broker_default("EVLI", "fixed_instrument_name") == "NOKIA"
     assert settings.broker_default("SELIGSON", "instrument_name_template") == "SELIGSON {portfolio}"
+
+
+def test_settings_portfolio_owner_plain_string_applies_to_whole_broker():
+    settings = AppSettings.load(
+        settings_path=Path("does-not-exist-user-settings.yaml"),
+        example_path=DEFAULT_EXAMPLE_SETTINGS_PATH,
+    )
+
+    assert settings.portfolio_owner("EVLI", "Plan Cycle 2023") == "PERSONAL"
+    assert settings.portfolio_owner("EVLI", "SIS Dividend") == "PERSONAL"
+
+
+def test_settings_portfolio_owner_per_portfolio_mapping_with_default_fallback():
+    settings = AppSettings.load(
+        settings_path=Path("does-not-exist-user-settings.yaml"),
+        example_path=DEFAULT_EXAMPLE_SETTINGS_PATH,
+    )
+
+    assert settings.portfolio_owner("NORDNET", "20429585") == "PERSONAL"
+    assert settings.portfolio_owner("NORDNET", "99999999") == "HOUSEHOLD"
+
+
+def test_settings_portfolio_owner_unknown_broker_returns_blank():
+    settings = AppSettings.load(
+        settings_path=Path("does-not-exist-user-settings.yaml"),
+        example_path=DEFAULT_EXAMPLE_SETTINGS_PATH,
+    )
+
+    assert settings.portfolio_owner("SOME_UNCONFIGURED_BROKER", "X") == ""
+
+
+def test_settings_portfolio_type_lookup(tmp_path):
+    # Deliberately not testing this against the real example file:
+    # settings.example.yaml intentionally has no portfolio_types example
+    # value, because config/settings.yaml only overrides keys it explicitly
+    # sets - a real-looking example value here would silently leak into any
+    # deployment that configures a different broker under portfolio_types
+    # without also overriding this one (real incident: an example "EVLI:
+    # Arvo-osuustili" value leaked into this project's own real settings.yaml
+    # this way before the example was emptied out).
+    settings_path = tmp_path / "settings.yaml"
+    settings_path.write_text(
+        """
+investments:
+  portfolio_types:
+    EVLI: "Arvo-osuustili"
+""",
+        encoding="utf-8",
+    )
+    settings = AppSettings.load(settings_path=settings_path, example_path=DEFAULT_EXAMPLE_SETTINGS_PATH)
+
+    assert settings.portfolio_type("EVLI", "Plan Cycle 2023") == "ARVO-OSUUSTILI"
+
+
+def test_example_settings_has_no_portfolio_type_leak_risk():
+    """
+    portfolio_types in the example file must stay empty - any value here
+    would silently apply to every deployment's real settings.yaml unless
+    that deployment happens to override the exact same broker key.
+    """
+    settings = AppSettings.load(
+        settings_path=Path("does-not-exist-user-settings.yaml"),
+        example_path=DEFAULT_EXAMPLE_SETTINGS_PATH,
+    )
+
+    assert settings.get("investments", "portfolio_types", default={}) == {}

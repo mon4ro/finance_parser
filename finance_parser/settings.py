@@ -163,6 +163,40 @@ class AppSettings:
         broker_key = _normalise_key(broker)
         return self.get("investments", "broker_defaults", broker_key, key, default=default)
 
+    def _portfolio_setting(self, section: str, broker: object, portfolio: object) -> str:
+        """
+        Look up a per-(Broker, Portfolio) investment setting.
+
+        The config value for a broker may be a plain string (applies to every
+        portfolio under that broker) or a mapping from Portfolio to value,
+        with an optional "default" key as a broker-wide fallback. This mirrors
+        how Owner is deliberately kept out of parser code on the budgeting
+        side - which account/portfolio belongs to which person is a
+        deployment-specific fact that belongs in settings, not in
+        InstrumentMaster (content-based rules) or parser code.
+        """
+        broker_key = _normalise_key(broker)
+        portfolio_key = _normalise_key(portfolio)
+        config = self.get("investments", section, broker_key, default=None)
+
+        if config is None:
+            return ""
+        if isinstance(config, str):
+            return _normalise_key(config)
+        if isinstance(config, dict):
+            normalised = {_normalise_key(k): v for k, v in config.items()}
+            if portfolio_key in normalised:
+                return _normalise_key(normalised[portfolio_key])
+            if "DEFAULT" in normalised:
+                return _normalise_key(normalised["DEFAULT"])
+        return ""
+
+    def portfolio_owner(self, broker: object, portfolio: object) -> str:
+        return self._portfolio_setting("portfolio_owners", broker, portfolio)
+
+    def portfolio_type(self, broker: object, portfolio: object) -> str:
+        return self._portfolio_setting("portfolio_types", broker, portfolio)
+
 
 _SETTINGS_CACHE: AppSettings | None = None
 

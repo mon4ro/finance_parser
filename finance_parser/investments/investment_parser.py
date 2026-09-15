@@ -15,6 +15,7 @@ from finance_parser.investments.investment_common import (
     INVESTMENT_TRANSACTIONS_COLUMNS,
     INVESTMENT_TRANSACTIONS_SHEET,
     apply_instrument_master,
+    apply_portfolio_ownership,
     load_instrument_master,
     raw_to_investment_transactions,
     read_dynamic_sheet,
@@ -245,6 +246,7 @@ def append_to_output(input_path: Path, output_path: Path, instrument_master_path
 
     instrument_master = load_instrument_master(instrument_master_path)
     combined_transactions = apply_instrument_master(combined_transactions, instrument_master)
+    combined_transactions = apply_portfolio_ownership(combined_transactions)
 
     rows_read = len(imported_raw)
     rows_new = len(new_raw)

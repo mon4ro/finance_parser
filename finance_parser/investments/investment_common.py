@@ -15,6 +15,7 @@ from finance_parser.common import (
     normalise_header,
     normalise_text,
 )
+from finance_parser.settings import get_settings
 
 
 INVESTMENT_RAW_SHEET = "RawInvestmentTransactions"
@@ -334,6 +335,39 @@ def _set_if_blank_or_default(df: pd.DataFrame, idx, column: str, value: object, 
         df.at[idx, column] = new_value
 
 
+def apply_portfolio_ownership(transactions: pd.DataFrame) -> pd.DataFrame:
+    """
+    Backfill PortfolioOwner/PortfolioType from settings.yaml across the whole
+    transaction history, not just newly-parsed rows.
+
+    raw_to_investment_transactions() already applies this default the moment
+    a row is first created, but a settings.yaml mapping added or changed
+    later (e.g. after importing more history) should retroactively fill
+    existing rows too - same reasoning as the ISIN backfill in
+    apply_instrument_master(), and why apply_instrument_master() itself is
+    re-run against the full combined transaction set on every pipeline run,
+    not just against new rows.
+    """
+    out = transactions.copy()
+    settings = get_settings()
+
+    for idx, row in out.iterrows():
+        broker = row.get("Broker", "")
+        portfolio = row.get("Portfolio", "")
+
+        if _is_blank(row.get("PortfolioOwner", "")):
+            owner = settings.portfolio_owner(broker, portfolio)
+            if owner:
+                out.at[idx, "PortfolioOwner"] = owner
+
+        if _is_blank(row.get("PortfolioType", "")):
+            portfolio_type = settings.portfolio_type(broker, portfolio)
+            if portfolio_type:
+                out.at[idx, "PortfolioType"] = portfolio_type
+
+    return out
+
+
 def apply_instrument_master(transactions: pd.DataFrame, master: pd.DataFrame) -> pd.DataFrame:
     out = transactions.copy()
 
@@ -382,17 +416,28 @@ def apply_instrument_master(transactions: pd.DataFrame, master: pd.DataFrame) ->
 
 def raw_to_investment_transactions(raw_new: pd.DataFrame) -> pd.DataFrame:
     rows = []
+    settings = get_settings()
 
     for _, row in raw_new.iterrows():
         instrument_name = normalise_text(row.get("InstrumentName", ""))
+        broker = row.get("Broker", "")
+        portfolio = row.get("Portfolio", "")
+
+        # PortfolioOwner/PortfolioType are account-level facts (which person,
+        # which account wrapper), not content-based rules, so - same reasoning
+        # as Owner on the budgeting side (see CLAUDE.md) - they're defaulted
+        # from settings.yaml here, not hardcoded in parser code or looked up
+        # from InstrumentMaster (which is content-matching, like CategoryRules).
+        portfolio_owner = normalise_text(row.get("PortfolioOwner", "")) or settings.portfolio_owner(broker, portfolio)
+        portfolio_type = normalise_text(row.get("PortfolioType", "")) or settings.portfolio_type(broker, portfolio)
 
         rows.append({
             "InvestmentTransactionID": investment_transaction_id(row.get("InvestmentRawID", "")),
             "InvestmentRawID": row.get("InvestmentRawID", ""),
-            "Broker": row.get("Broker", ""),
-            "Portfolio": row.get("Portfolio", ""),
-            "PortfolioOwner": row.get("PortfolioOwner", ""),
-            "PortfolioType": row.get("PortfolioType", ""),
+            "Broker": broker,
+            "Portfolio": portfolio,
+            "PortfolioOwner": portfolio_owner,
+            "PortfolioType": portfolio_type,
             "TransactionType": normalise_investment_transaction_type(row.get("TransactionTypeRaw", "")),
             "TradeDate": format_date(row.get("TradeDate", "")),
             "SettlementDate": format_date(row.get("SettlementDate", "")),
