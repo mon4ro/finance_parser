@@ -265,6 +265,15 @@ def _find_instrument_rule(row: pd.Series, master: pd.DataFrame) -> tuple[pd.Seri
 
     RawInstrumentName matching also lets special names such as LEHTOU0120 map to
     the same normalized instrument as the ordinary stock.
+
+    A broker-pinned master row (Broker not blank) is preferred when one exists,
+    but is not a hard filter: a row pinned to one broker (e.g. NOKIA entered
+    from a Nordnet export) must still match the same real instrument held at a
+    different broker (e.g. EVLI). Real data confirmed this is safe - a scan of
+    the whole InstrumentMaster sheet found zero cases of the same
+    RawInstrumentName legitimately referring to two different instruments
+    across brokers (share classes like Kesko A/B already have distinct raw
+    names, so they're never at risk of this fallback conflating them).
     """
     if master.empty:
         return None, ""
@@ -274,36 +283,30 @@ def _find_instrument_rule(row: pd.Series, master: pd.DataFrame) -> tuple[pd.Seri
     raw_name_key = normalise_key(row.get("InstrumentName", ""))
     normalized_key = normalise_key(row.get("NormalizedInstrument", ""))
 
-    if isin_key:
-        mask = (master["_ISIN_KEY"] == isin_key) & (
-            (master["_BROKER_KEY"] == broker_key) | (master["_BROKER_KEY"] == "")
-        )
+    def _best_match(mask, own_broker_label: str, any_broker_label: str):
         matches = master.loc[mask].copy()
-        if len(matches) > 0:
-            # Prefer broker-specific row.
-            matches["_BROKER_SPECIFIC"] = matches["_BROKER_KEY"].map(lambda v: 1 if v == broker_key else 0)
-            matches = matches.sort_values("_BROKER_SPECIFIC", ascending=False)
-            return matches.iloc[0], "BROKER_ISIN" if matches.iloc[0]["_BROKER_KEY"] == broker_key else "ISIN"
+        if len(matches) == 0:
+            return None, ""
+        matches["_BROKER_SPECIFIC"] = matches["_BROKER_KEY"].map(lambda v: 1 if v == broker_key else 0)
+        matches = matches.sort_values("_BROKER_SPECIFIC", ascending=False)
+        best = matches.iloc[0]
+        label = own_broker_label if best["_BROKER_KEY"] == broker_key else any_broker_label
+        return best, label
+
+    if isin_key:
+        rule, label = _best_match(master["_ISIN_KEY"] == isin_key, "BROKER_ISIN", "ISIN")
+        if rule is not None:
+            return rule, label
 
     if raw_name_key:
-        mask = (master["_RAW_NAME_KEY"] == raw_name_key) & (
-            (master["_BROKER_KEY"] == broker_key) | (master["_BROKER_KEY"] == "")
-        )
-        matches = master.loc[mask].copy()
-        if len(matches) > 0:
-            matches["_BROKER_SPECIFIC"] = matches["_BROKER_KEY"].map(lambda v: 1 if v == broker_key else 0)
-            matches = matches.sort_values("_BROKER_SPECIFIC", ascending=False)
-            return matches.iloc[0], "BROKER_RAW_NAME" if matches.iloc[0]["_BROKER_KEY"] == broker_key else "RAW_NAME"
+        rule, label = _best_match(master["_RAW_NAME_KEY"] == raw_name_key, "BROKER_RAW_NAME", "RAW_NAME")
+        if rule is not None:
+            return rule, label
 
     if normalized_key:
-        mask = (master["_NORMALIZED_KEY"] == normalized_key) & (
-            (master["_BROKER_KEY"] == broker_key) | (master["_BROKER_KEY"] == "")
-        )
-        matches = master.loc[mask].copy()
-        if len(matches) > 0:
-            matches["_BROKER_SPECIFIC"] = matches["_BROKER_KEY"].map(lambda v: 1 if v == broker_key else 0)
-            matches = matches.sort_values("_BROKER_SPECIFIC", ascending=False)
-            return matches.iloc[0], "BROKER_NORMALIZED" if matches.iloc[0]["_BROKER_KEY"] == broker_key else "NORMALIZED"
+        rule, label = _best_match(master["_NORMALIZED_KEY"] == normalized_key, "BROKER_NORMALIZED", "NORMALIZED")
+        if rule is not None:
+            return rule, label
 
     return None, ""
 
@@ -366,6 +369,12 @@ def apply_instrument_master(transactions: pd.DataFrame, master: pd.DataFrame) ->
         _set_if_blank_or_default(out, idx, "InstrumentType", _master_value(rule, "InstrumentType"))
         _set_if_blank_or_default(out, idx, "AssetClass", _master_value(rule, "AssetClass"))
         _set_if_blank_or_default(out, idx, "InstrumentCurrency", _master_value(rule, "Currency"))
+        # ISIN was only ever populated from whatever the raw broker export
+        # happened to include natively (raw_to_investment_transactions()) -
+        # never backfilled from the master sheet, even when it has one. Real
+        # data check: several real instruments (NOKIA, TELIA, NESTE...) have
+        # an ISIN in InstrumentMaster that never made it into transaction rows.
+        _set_if_blank_or_default(out, idx, "ISIN", _master_value(rule, "ISIN"))
 
 
     return out[INVESTMENT_TRANSACTIONS_COLUMNS]
