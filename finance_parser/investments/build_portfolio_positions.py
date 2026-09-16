@@ -8,7 +8,6 @@ import pandas as pd
 from finance_parser.common import normalise_header, normalise_text
 from finance_parser.settings import get_settings
 from finance_parser.utilities.fresh_workbook_writer import (
-    read_workbook_values_only,
     records_to_sheet_values,
     replace_with_fresh_workbook,
     write_fresh_workbook,

@@ -70,20 +70,25 @@ Investment exports:
 input/investments/
 ```
 
-## 5. Run parsers
+## 5. Run the pipelines
 
 Budgeting:
 
 ```bash
-python transaction_parser.py
-python transaction_normaliser.py
+python run_budgeting_pipeline.py
 ```
 
 Investments:
 
 ```bash
-python investment_parser.py
+python run_investment_pipeline.py
 ```
+
+Both support `--dry-run` (runs against temporary copied workbooks; the real ones are
+untouched). Each individual stage can also be run directly, e.g.
+`python -m finance_parser.budgeting.transaction_parser` or
+`python -m finance_parser.investments.investment_parser` - see the main `README.md`
+for the full list and other flags.
 
 ## 6. Run tests
 

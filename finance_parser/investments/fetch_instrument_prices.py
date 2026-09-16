@@ -16,7 +16,6 @@ from finance_parser.utilities.fresh_workbook_writer import (
     read_workbook_values_only,
     records_to_sheet_values,
     replace_with_fresh_workbook,
-    sheet_values_to_records,
     write_fresh_workbook,
 )
 

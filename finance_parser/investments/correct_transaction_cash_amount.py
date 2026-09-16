@@ -3,8 +3,6 @@ from __future__ import annotations
 import argparse
 from pathlib import Path
 
-import pandas as pd
-
 from finance_parser.investments.investment_common import (
     INVESTMENT_IMPORT_LOG_COLUMNS,
     INVESTMENT_IMPORT_LOG_SHEET,
