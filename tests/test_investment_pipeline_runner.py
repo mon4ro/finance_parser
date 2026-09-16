@@ -27,6 +27,77 @@ def test_run_command_propagates_failure_without_swallowing_it(monkeypatch):
         pipeline.run_command(pipeline.PipelineCommand("dummy stage", ["false"]))
 
 
+def test_pipeline_cli_has_skip_pricing_and_skip_fx():
+    parser = pipeline.build_arg_parser()
+    args = parser.parse_args(["--skip-pricing", "--skip-fx"])
+
+    assert args.skip_pricing is True
+    assert args.skip_fx is True
+
+
+def test_skip_pricing_omits_price_fetch_stage_but_keeps_others():
+    workbooks = {key: Path(f"{key}.xlsx") for key in pipeline.WORKBOOK_KEYS}
+    commands = pipeline.build_pipeline_commands(
+        python_executable="python",
+        input_path=Path("input/investments"),
+        instrument_master_path=Path("rules/investments/InstrumentMaster.xlsx"),
+        workbooks=workbooks,
+        force=False,
+        stale_days=7,
+        skip_pricing=True,
+    )
+
+    assert [c.name for c in commands] == [
+        "investment parser",
+        "FX rate fetch",
+        "portfolio positions",
+        "instrument coverage check",
+        "monthly position value rollup",
+    ]
+
+
+def test_skip_fx_omits_fx_fetch_stage_but_keeps_others():
+    workbooks = {key: Path(f"{key}.xlsx") for key in pipeline.WORKBOOK_KEYS}
+    commands = pipeline.build_pipeline_commands(
+        python_executable="python",
+        input_path=Path("input/investments"),
+        instrument_master_path=Path("rules/investments/InstrumentMaster.xlsx"),
+        workbooks=workbooks,
+        force=False,
+        stale_days=7,
+        skip_fx=True,
+    )
+
+    assert [c.name for c in commands] == [
+        "investment parser",
+        "instrument price fetch",
+        "portfolio positions",
+        "instrument coverage check",
+        "monthly position value rollup",
+    ]
+
+
+def test_skip_pricing_and_skip_fx_together_omit_both_network_stages():
+    workbooks = {key: Path(f"{key}.xlsx") for key in pipeline.WORKBOOK_KEYS}
+    commands = pipeline.build_pipeline_commands(
+        python_executable="python",
+        input_path=Path("input/investments"),
+        instrument_master_path=Path("rules/investments/InstrumentMaster.xlsx"),
+        workbooks=workbooks,
+        force=False,
+        stale_days=7,
+        skip_pricing=True,
+        skip_fx=True,
+    )
+
+    assert [c.name for c in commands] == [
+        "investment parser",
+        "portfolio positions",
+        "instrument coverage check",
+        "monthly position value rollup",
+    ]
+
+
 def test_pipeline_cli_has_dry_run_keep_temp_and_force():
     parser = pipeline.build_arg_parser()
     args = parser.parse_args(["--dry-run", "--keep-temp", "--force"])

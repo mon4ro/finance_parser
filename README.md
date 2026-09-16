@@ -52,11 +52,40 @@ python -m finance_parser.budgeting.transaction_categoriser --dry-run
 
 ## Investment workflow
 
-Run the investment parser:
+Run the full investment pipeline (parse, fetch prices, fetch FX rates, build positions,
+check coverage, build the monthly value rollup):
 
 ```bash
-python investment_parser.py
+python run_investment_pipeline.py
 ```
+
+Run a full dry-run against temporary copied workbooks:
+
+```bash
+python run_investment_pipeline.py --dry-run
+```
+
+Skip the network-bound stages (price/FX fetch) for offline dev/debug iteration on
+positions, coverage, or rollup logic - uses whatever price/FX data already exists:
+
+```bash
+python run_investment_pipeline.py --skip-pricing --skip-fx
+```
+
+Run individual investment steps:
+
+```bash
+python -m finance_parser.investments.investment_parser
+python -m finance_parser.investments.fetch_instrument_prices
+python -m finance_parser.investments.fetch_fx_rates
+python -m finance_parser.investments.build_portfolio_positions
+python -m finance_parser.investments.check_instrument_coverage
+python -m finance_parser.investments.build_monthly_position_value
+```
+
+Each script has its own `--help`; use `--force` on the pipeline (or on
+`check_instrument_coverage` directly) to proceed past incomplete coverage instead of
+halting.
 
 ## Tests
 
@@ -78,5 +107,5 @@ rules/
 tests/
 tools/
 run_budgeting_pipeline.py
-investment_parser.py
+run_investment_pipeline.py
 ```

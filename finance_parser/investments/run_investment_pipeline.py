@@ -79,6 +79,17 @@ def build_arg_parser() -> argparse.ArgumentParser:
         default=DEFAULT_STALE_DAYS,
         help="Pass through to the coverage check: flag a price as stale if older than this many days.",
     )
+    parser.add_argument(
+        "--skip-pricing",
+        action="store_true",
+        help="Skip the instrument price fetch stage (network call). For offline dev/debug iteration on "
+             "positions/coverage/rollup logic - downstream stages use whatever price data already exists.",
+    )
+    parser.add_argument(
+        "--skip-fx",
+        action="store_true",
+        help="Skip the FX rate fetch stage (network call). Same use case as --skip-pricing.",
+    )
     return parser
 
 
@@ -115,6 +126,8 @@ def build_pipeline_commands(
     workbooks: dict[str, Path],
     force: bool,
     stale_days: int,
+    skip_pricing: bool = False,
+    skip_fx: bool = False,
 ) -> list[PipelineCommand]:
     parse_cmd = [
         python_executable, "-m", "finance_parser.investments.investment_parser",
@@ -161,14 +174,15 @@ def build_pipeline_commands(
         "--output-workbook", str(workbooks["monthly_value"]),
     ]
 
-    return [
-        PipelineCommand("investment parser", parse_cmd),
-        PipelineCommand("instrument price fetch", prices_cmd),
-        PipelineCommand("FX rate fetch", fx_cmd),
-        PipelineCommand("portfolio positions", positions_cmd),
-        PipelineCommand("instrument coverage check", coverage_cmd, is_gate=True),
-        PipelineCommand("monthly position value rollup", rollup_cmd),
-    ]
+    commands = [PipelineCommand("investment parser", parse_cmd)]
+    if not skip_pricing:
+        commands.append(PipelineCommand("instrument price fetch", prices_cmd))
+    if not skip_fx:
+        commands.append(PipelineCommand("FX rate fetch", fx_cmd))
+    commands.append(PipelineCommand("portfolio positions", positions_cmd))
+    commands.append(PipelineCommand("instrument coverage check", coverage_cmd, is_gate=True))
+    commands.append(PipelineCommand("monthly position value rollup", rollup_cmd))
+    return commands
 
 
 def run_command(command: PipelineCommand) -> float:
@@ -223,6 +237,13 @@ def run_pipeline(args: argparse.Namespace) -> int:
         for key, real_path in real_workbooks.items():
             print(f"  {key}: {real_path}")
 
+    if args.skip_pricing or args.skip_fx:
+        print()
+        if args.skip_pricing:
+            print("Skipping instrument price fetch (--skip-pricing): using existing price data as-is.")
+        if args.skip_fx:
+            print("Skipping FX rate fetch (--skip-fx): using existing FX rate data as-is.")
+
     commands = build_pipeline_commands(
         python_executable=sys.executable,
         input_path=input_path,
@@ -230,6 +251,8 @@ def run_pipeline(args: argparse.Namespace) -> int:
         workbooks=workbooks_for_run,
         force=args.force,
         stale_days=args.stale_days,
+        skip_pricing=args.skip_pricing,
+        skip_fx=args.skip_fx,
     )
 
     stage_timings: list[tuple[str, float]] = []
