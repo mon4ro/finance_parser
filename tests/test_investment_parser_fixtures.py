@@ -54,10 +54,28 @@ def test_evli_fixture_parses_nokia_dividend():
     row = df.iloc[0]
 
     assert row["Broker"] == "EVLI"
-    assert row["Portfolio"] == "SIS Dividend"
+    assert row["Portfolio"] == "EVLI"
+    assert row["PlanCycle"] == "SIS Dividend"
     assert row["InstrumentName"] == "NOKIA"
     assert row["TransactionTypeRaw"] == "Dividend"
     assert row["CashAmount"] == 17.88
+
+
+def test_evli_raw_id_distinguishes_rows_by_plan_cycle_not_portfolio():
+    """
+    Real bug this replaced: Portfolio is now a constant ("EVLI"), so it can
+    no longer be part of the row-ID hash - PlanCycle must be, or two
+    otherwise-identical rows from different plan cycles would collide onto
+    the same InvestmentRawID and one would silently vanish as a "duplicate".
+    """
+    base = {
+        "TransactionTypeRaw": "Vesting", "Quantity": 10, "UnitPrice": 5.0,
+        "CashAmount": 0.0, "Status": "Confirmed", "ValueDate": "2026-01-01",
+    }
+    row_a = pd.Series({**base, "PlanCycle": "Plan Cycle 2022"})
+    row_b = pd.Series({**base, "PlanCycle": "Plan Cycle 2023"})
+
+    assert evli.make_investment_raw_id(row_a) != evli.make_investment_raw_id(row_b)
 
 
 def test_op_investment_fixture_parses_dividend():
@@ -139,7 +157,6 @@ investments:
   broker_defaults:
     EVLI:
       fixed_instrument_name: "ACME"
-      portfolio_from_export_column: "Instrument"
     SELIGSON:
       instrument_name_template: "CUSTOM FUND {portfolio}"
 """,

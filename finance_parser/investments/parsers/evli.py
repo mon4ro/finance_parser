@@ -26,9 +26,15 @@ BROKER_RAW_SHEET = "EvliRawExport"
 # EVLI export syntax:
 # Instrument | Event type | Quantity | bonusPercent | amount | amountLocal | Value | Date | Status
 #
-# In some EVLI exports, the column named "Instrument" may contain plan/program
-# labels such as "Plan Cycle 2022" or "SIS Dividend", not the actual traded
-# instrument. User/workbook-specific instrument policy is read from settings.
+# The export column named "Instrument" is actually a plan/program label (e.g.
+# "Plan Cycle 2022", "SIS Dividend"), not the traded instrument or a real
+# per-account identifier - EVLI is one real account holding one real
+# instrument (the employee stock plan's own stock), never multiple. Portfolio
+# is therefore hardcoded to the broker name, matching how OP's parser already
+# does the same thing for its own account-less export. The plan label is kept
+# as its own PlanCycle raw-data column instead of being folded into Portfolio
+# (real bug this replaced: treating each plan cycle as a separate "portfolio"
+# fragmented one real holding's cumulative quantity across 5 fake groups).
 
 EVLI_REQUIRED_COLUMNS = [
     "Instrument",
@@ -128,29 +134,23 @@ def _fixed_instrument_name() -> str:
     return str(get_settings().broker_default(BROKER, "fixed_instrument_name", default="EVLI")).strip() or "EVLI"
 
 
-def _portfolio_export_column() -> str:
+def _plan_cycle_from_export_instrument(value: object) -> str:
     """
-    Return the configured EVLI column used as Portfolio.
-
-    Example:
-      investments.broker_defaults.EVLI.portfolio_from_export_column = Instrument
+    The EVLI export column named `Instrument` is actually a plan/program
+    label (e.g. "Plan Cycle 2022", "SIS Dividend") - captured verbatim as
+    PlanCycle, not used as Portfolio (see module docstring above).
     """
-    return str(get_settings().broker_default(BROKER, "portfolio_from_export_column", default="Instrument")).strip() or "Instrument"
-
-
-def _portfolio_from_export_instrument(value: object) -> str:
-    """
-    The EVLI export column named `Instrument` is actually a plan/program label.
-    Use it as Portfolio so the plan cycle is still available in structured form.
-    """
-    text = normalise_text(value)
-    return text or "EVLI"
+    return normalise_text(value)
 
 
 def make_investment_raw_id(row: pd.Series) -> str:
+    # Portfolio is now a constant ("EVLI"), so PlanCycle is what distinguishes
+    # otherwise-identical rows from different plan cycles - it must be in the
+    # hash, not Portfolio, or two coincidentally-identical rows from
+    # different cycles would collide onto the same ID.
     return "EVL-" + stable_hash([
         BROKER,
-        row.get("Portfolio", ""),
+        row.get("PlanCycle", ""),
         row.get("ValueDate", ""),
         row.get("TransactionTypeRaw", ""),
         row.get("Quantity", ""),
@@ -188,7 +188,6 @@ def parse_file(path: Path, imported_at: str) -> pd.DataFrame:
     date_col = columns["Date"]
     status_col = columns["Status"]
 
-    configured_portfolio_col = columns.get(_portfolio_export_column()) or instrument_col
     fixed_instrument_name = _fixed_instrument_name()
 
     df = df[df[date_col].notna()]
@@ -201,7 +200,7 @@ def parse_file(path: Path, imported_at: str) -> pd.DataFrame:
     rows: list[dict[str, object]] = []
 
     for _, row in df.iterrows():
-        plan = _portfolio_from_export_instrument(row.get(configured_portfolio_col, ""))
+        plan_cycle = _plan_cycle_from_export_instrument(row.get(instrument_col, ""))
         event_type = normalise_text(row.get(event_col, ""))
         status = normalise_text(row.get(status_col, ""))
 
@@ -211,7 +210,8 @@ def parse_file(path: Path, imported_at: str) -> pd.DataFrame:
 
         parsed_row = {
             "Broker": BROKER,
-            "Portfolio": plan,
+            "Portfolio": BROKER,
+            "PlanCycle": plan_cycle,
             "PortfolioOwner": "",
             "PortfolioType": "",
             "BookingDate": format_date(row.get(date_col, "")),
@@ -234,7 +234,7 @@ def parse_file(path: Path, imported_at: str) -> pd.DataFrame:
             "TotalQuantity": "",
             "CashBalance": "",
             "ExchangeRate": 1,
-            "Description": f"{plan} | {event_type} | {status}",
+            "Description": f"{plan_cycle} | {event_type} | {status}",
             "CancellationDate": "",
             "CalculationID": "",
             "ConfirmationNumber": "",
