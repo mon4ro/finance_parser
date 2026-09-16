@@ -177,9 +177,9 @@ def test_build_positions_handles_osto_hinnaton_free_share_grant(tmp_path):
     a free-share acquisition, same failure pattern as JÄTTÖ SIIRTO above but
     a different broker/label - previously unhandled, silently dropping an
     entire real holding with real ongoing dividends. Unlike JÄTTÖ SIIRTO,
-    deliberately NOT in CASH_FLOW_TYPES (matches ALLOCATED/DELIVERY/MATCHING:
-    a free grant, not a transfer that might later get a manually-corrected
-    cost basis).
+    deliberately NOT in CASH_FLOW_TYPES (matches ALLOCATED/MATCHING: a free
+    grant, not a transfer that might later get a manually-corrected cost
+    basis).
     """
     path = tmp_path / "ParsedInvestments.xlsx"
     _write_transactions(path, [
@@ -192,6 +192,34 @@ def test_build_positions_handles_osto_hinnaton_free_share_grant(tmp_path):
     rows = positions[positions["NormalizedInstrument"] == "SAMPO A"]
     assert list(rows["CumulativeQuantity"]) == [50.0]
     assert list(rows["CumulativeNetInvested"]) == [0.0]
+    assert stats["unhandled_types"] == {}
+
+
+def test_build_positions_delivery_does_not_double_count_matching(tmp_path):
+    """
+    Real bug found and fixed: DELIVERY was previously treated as an
+    independent quantity-add, double-counting an employer stock plan's
+    matched shares. Confirmed against real EVLI data across four
+    independent plan cycles: each cycle's MATCHING total matches that same
+    cycle's later DELIVERY quantity almost exactly - DELIVERY is the final
+    vesting confirmation of shares MATCHING already added, not a second
+    batch. Caught by the user's real current holding being off from the
+    tracked figure by exactly the sum of several years' DELIVERY
+    quantities.
+    """
+    path = tmp_path / "ParsedInvestments.xlsx"
+    _write_transactions(path, [
+        {"Broker": "EVLI", "Portfolio": "EVLI", "NormalizedInstrument": "SAMPO A", "TransactionType": "BUY", "TradeDate": "2021-01-01", "Quantity": 100, "CashAmount": -500},
+        {"Broker": "EVLI", "Portfolio": "EVLI", "NormalizedInstrument": "SAMPO A", "TransactionType": "MATCHING", "TradeDate": "2021-01-01", "Quantity": 50, "CashAmount": 0},
+        {"Broker": "EVLI", "Portfolio": "EVLI", "NormalizedInstrument": "SAMPO A", "TransactionType": "DELIVERY", "TradeDate": "2021-06-01", "Quantity": 50, "CashAmount": 0},
+    ])
+
+    positions, stats = build_positions(path, _no_instrument_master(tmp_path))
+
+    rows = positions[positions["NormalizedInstrument"] == "SAMPO A"]
+    # 100 (BUY) + 50 (MATCHING) = 150 - DELIVERY confirms the same 50
+    # shares, it doesn't add another 50 on top.
+    assert rows["CumulativeQuantity"].iloc[-1] == 150.0
     assert stats["unhandled_types"] == {}
 
 

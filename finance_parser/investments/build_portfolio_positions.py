@@ -49,13 +49,13 @@ POSITIONS_COLUMNS = [
 # "SPLIT AP JÄTTÖ" with the small post-split count and "SPLIT AP OTTO" with
 # the large pre-split count being given up.
 QUANTITY_ADD_TYPES = {
-    "BUY", "ALLOCATED", "DELIVERY", "MATCHING",
+    "BUY", "ALLOCATED", "MATCHING",
     "VAIHTO AP-JÄTTÖ", "VAIHTO - JÄTTÖ",
     # Real bug found and fixed: OP's "OSTO - HINNATON" ("purchase, priceless")
-    # is a free-share acquisition, same meaning as ALLOCATED/DELIVERY/MATCHING
-    # (no market cost, so deliberately not in CASH_FLOW_TYPES either - a
-    # DELIVERY-like grant, not a JÄTTÖ-like transfer that might later get a
-    # manually-corrected cost basis). Previously unhandled, which silently
+    # is a free-share acquisition, same meaning as ALLOCATED/MATCHING (no
+    # market cost, so deliberately not in CASH_FLOW_TYPES either - a free
+    # grant, not a JÄTTÖ-like transfer that might later get a manually-
+    # corrected cost basis). Previously unhandled, which silently
     # dropped an entire real holding (real ongoing dividend history since -
     # confirmed by the user checking their own real holdings) since this was
     # the ONLY event establishing that holding's quantity - same failure
@@ -121,6 +121,19 @@ CASH_FLOW_TYPES = {"BUY", "SELL", "OPENING BALANCE", "VAIHTO - JÄTTÖ", "VAIHTO
 KNOWN_NEUTRAL_TYPES = {
     "DIVIDEND", "INTEREST", "FEE", "TAX", "ENNAKKOPIDÄTYS",
     "DEPOSIT", "WITHDRAWAL", "TALLETUS OST.",
+    # Real bug found and fixed: DELIVERY was previously in QUANTITY_ADD_TYPES,
+    # double-counting EVLI's employer-matched Nokia shares. Confirmed against
+    # real data across four independent plan cycles: each cycle's MATCHING
+    # total (the provisional "you've earned N matched shares" entry) matches
+    # that same cycle's later DELIVERY quantity almost exactly (off by 0.5,
+    # explained by the paired REDEMPTION fractional-share cleanup) - DELIVERY
+    # is the final vesting confirmation of shares MATCHING already added, not
+    # a second batch. Caught by the user's real current EVLI holding being
+    # off from the tracked figure by exactly the sum of four years' DELIVERY
+    # quantities. DELIVERY is used ONLY for EVLI/Nokia anywhere in the real
+    # dataset, so this doesn't risk hiding a real standalone addition for
+    # any other holding.
+    "DELIVERY",
 } | KNOWN_NEUTRAL_SPLIT_PAIR_TYPES
 
 
