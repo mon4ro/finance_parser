@@ -10,6 +10,10 @@ LEGACY_BUDGETING_COMMANDS = [
     "python transaction_categoriser.py",
 ]
 
+LEGACY_INVESTMENT_COMMANDS = [
+    "python investment_parser.py",
+]
+
 
 def test_readme_exists_and_mentions_core_commands():
     readme = PROJECT_ROOT / "README.md"
@@ -20,10 +24,11 @@ def test_readme_exists_and_mentions_core_commands():
     assert "python -m finance_parser.budgeting.transaction_parser" in text
     assert "python -m finance_parser.budgeting.transaction_normaliser" in text
     assert "python -m finance_parser.budgeting.transaction_categoriser" in text
-    assert "python investment_parser.py" in text
+    assert "python run_investment_pipeline.py" in text
+    assert "python -m finance_parser.investments.investment_parser" in text
     assert "python -m pytest" in text
 
-    for legacy_command in LEGACY_BUDGETING_COMMANDS:
+    for legacy_command in LEGACY_BUDGETING_COMMANDS + LEGACY_INVESTMENT_COMMANDS:
         assert legacy_command not in text
 
 

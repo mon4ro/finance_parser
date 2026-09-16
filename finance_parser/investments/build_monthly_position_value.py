@@ -22,10 +22,10 @@ DEFAULT_OUTPUT_WORKBOOK = PROJECT_ROOT / "output" / "investments" / "MonthlyPosi
 
 MONTHLY_VALUE_SHEET = "MonthlyPositionValue"
 MONTHLY_VALUE_COLUMNS = [
-    "MonthEnd", "Broker", "Portfolio", "NormalizedInstrument",
-    "CumulativeQuantity", "PriceLocal", "PriceDate", "InstrumentCurrency",
-    "FXRate", "FXDate", "MarketValueEUR", "CumulativeNetInvested",
-    "UnrealizedGainEUR",
+    "MonthEnd", "Year", "Month", "Broker", "Portfolio", "PortfolioOwner",
+    "NormalizedInstrument", "CumulativeQuantity", "PriceLocal", "PriceDate",
+    "InstrumentCurrency", "FXRate", "FXDate", "MarketValueEUR",
+    "CumulativeNetInvested", "UnrealizedGainEUR",
 ]
 
 BASE_CURRENCY = "EUR"
@@ -42,6 +42,10 @@ def load_portfolio_positions(path: Path) -> pd.DataFrame:
     df["Date"] = pd.to_datetime(df["Date"], errors="coerce")
     df["CumulativeQuantity"] = pd.to_numeric(df["CumulativeQuantity"], errors="coerce")
     df["CumulativeNetInvested"] = pd.to_numeric(df["CumulativeNetInvested"], errors="coerce")
+
+    if "PortfolioOwner" not in df.columns:
+        df["PortfolioOwner"] = ""
+    df["PortfolioOwner"] = df["PortfolioOwner"].map(normalise_text)
 
     return df.dropna(subset=["Date"]).sort_values("Date")
 
@@ -103,6 +107,7 @@ def build_monthly_values(
 
     for (broker, portfolio, instrument), group in positions.groupby(group_cols, sort=False):
         group = group.sort_values("Date")
+        owner = normalise_text(group["PortfolioOwner"].iloc[0]) if "PortfolioOwner" in group.columns else ""
         months = month_end_dates(group["Date"].iloc[0], last_month_end)
         if len(months) == 0:
             continue
@@ -163,8 +168,11 @@ def build_monthly_values(
 
             rows.append({
                 "MonthEnd": month_end.strftime("%Y-%m-%d"),
+                "Year": month_end.year,
+                "Month": month_end.month,
                 "Broker": broker,
                 "Portfolio": portfolio,
+                "PortfolioOwner": owner,
                 "NormalizedInstrument": instrument,
                 "CumulativeQuantity": quantity,
                 "PriceLocal": price_local,

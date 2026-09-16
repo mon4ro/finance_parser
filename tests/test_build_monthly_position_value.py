@@ -10,7 +10,7 @@ from finance_parser.investments.build_monthly_position_value import (
 
 
 POSITIONS_HEADERS = [
-    "Broker", "Portfolio", "NormalizedInstrument", "Date", "TransactionType",
+    "Broker", "Portfolio", "PortfolioOwner", "NormalizedInstrument", "Date", "TransactionType",
     "QuantityDelta", "CumulativeQuantity", "CashDelta", "CumulativeNetInvested",
 ]
 PRICES_HEADERS = ["NormalizedInstrument", "ISIN", "PriceSymbol", "Date", "Close", "Currency", "PriceSource", "FetchedAt"]
@@ -61,9 +61,52 @@ def test_eur_instrument_market_value_and_gain(tmp_path):
 
     row = result.iloc[0]
     assert row["MonthEnd"] == "2021-03-31"
+    assert row["Year"] == 2021
+    assert row["Month"] == 3
     assert row["MarketValueEUR"] == 1200.0
     assert row["UnrealizedGainEUR"] == 2200.0
     assert row["FXRate"] == 1.0
+
+
+def test_portfolio_owner_carried_through_from_positions(tmp_path):
+    positions_path = tmp_path / "PortfolioPositions.xlsx"
+    prices_path = tmp_path / "InstrumentPrices.xlsx"
+    fx_path = tmp_path / "FXRates.xlsx"
+
+    _positions(positions_path, [
+        {"Broker": "NORDNET", "Portfolio": "1", "PortfolioOwner": "PERSON_A", "NormalizedInstrument": "SAMPO A", "Date": "2021-03-15", "CumulativeQuantity": 100, "CumulativeNetInvested": -1000},
+    ])
+    _prices(prices_path, [
+        {"NormalizedInstrument": "SAMPO A", "Date": "2021-03-31", "Close": 12.0, "Currency": "EUR"},
+    ])
+    _fx(fx_path, [])
+
+    result, stats = build_monthly_values(positions_path, prices_path, fx_path, as_of=date(2021, 4, 5))
+
+    assert result.iloc[0]["PortfolioOwner"] == "PERSON_A"
+
+
+def test_portfolio_owner_blank_when_positions_sheet_predates_the_column(tmp_path):
+    """PortfolioPositions.xlsx files written before this column existed must
+    not error - just carry an empty PortfolioOwner through."""
+    positions_path = tmp_path / "PortfolioPositions.xlsx"
+    prices_path = tmp_path / "InstrumentPrices.xlsx"
+    fx_path = tmp_path / "FXRates.xlsx"
+
+    _write_sheet(
+        positions_path,
+        "PortfolioPositions",
+        ["Broker", "Portfolio", "NormalizedInstrument", "Date", "TransactionType", "QuantityDelta", "CumulativeQuantity", "CashDelta", "CumulativeNetInvested"],
+        [{"Broker": "NORDNET", "Portfolio": "1", "NormalizedInstrument": "SAMPO A", "Date": "2021-03-15", "CumulativeQuantity": 100, "CumulativeNetInvested": -1000}],
+    )
+    _prices(prices_path, [
+        {"NormalizedInstrument": "SAMPO A", "Date": "2021-03-31", "Close": 12.0, "Currency": "EUR"},
+    ])
+    _fx(fx_path, [])
+
+    result, stats = build_monthly_values(positions_path, prices_path, fx_path, as_of=date(2021, 4, 5))
+
+    assert result.iloc[0]["PortfolioOwner"] == ""
 
 
 def test_non_eur_instrument_converts_using_fx_rate(tmp_path):

@@ -1,13 +1,48 @@
+from pathlib import Path
+
 import pytest
 from openpyxl import Workbook
 
+from finance_parser import settings as settings_module
+from finance_parser.settings import AppSettings
 from finance_parser.investments.build_portfolio_positions import build_positions
 
 
 TRANSACTIONS_HEADERS = [
-    "Broker", "Portfolio", "NormalizedInstrument", "TransactionType",
+    "Broker", "Portfolio", "PortfolioOwner", "NormalizedInstrument", "TransactionType",
     "TradeDate", "Quantity", "CashAmount",
 ]
+
+
+def _with_settings(yaml_text: str, tmp_path: Path):
+    settings_path = tmp_path / "settings.yaml"
+    settings_path.write_text(yaml_text, encoding="utf-8")
+    return AppSettings.load(settings_path=settings_path, example_path=Path("does-not-exist.yaml"))
+
+
+_BASE_SETTINGS_YAML = """
+project:
+  name: "Test"
+  locale: "fi_FI"
+  default_currency: "EUR"
+
+paths:
+  budgeting_input: "input/budgeting"
+  budgeting_output: "output/budgeting/ParsedTransactions.xlsx"
+  budgeting_rules: "rules/budgeting/TransactionRules.xlsx"
+  investment_input: "input/investments"
+  investment_output: "output/investments/ParsedInvestments.xlsx"
+  investment_rules: "rules/investments/InstrumentMaster.xlsx"
+
+budgeting:
+  default_include: "YES"
+  source_bank_aliases: {{}}
+  source_account_inference: {{}}
+
+investments:
+  portfolio_owners:
+    {portfolio_owners}
+"""
 
 
 def _write_transactions(path, rows):
@@ -182,3 +217,65 @@ def test_build_positions_without_opening_positions_sheet_is_a_no_op(tmp_path):
 
     assert stats["transactions_scanned"] == 1
     assert len(positions) == 1
+
+
+def test_build_positions_carries_portfolio_owner_directly_from_transactions(tmp_path):
+    path = tmp_path / "ParsedInvestments.xlsx"
+    _write_transactions(path, [
+        {"Broker": "NORDNET", "Portfolio": "1", "PortfolioOwner": "PERSON_A", "NormalizedInstrument": "SAMPO A", "TransactionType": "BUY", "TradeDate": "2021-01-01", "Quantity": 100, "CashAmount": -1000},
+    ])
+
+    positions, _ = build_positions(path, _no_instrument_master(tmp_path))
+
+    assert list(positions["PortfolioOwner"]) == ["PERSON_A"]
+
+
+def test_build_positions_backfills_blank_portfolio_owner_from_settings(tmp_path):
+    """
+    A row parsed before portfolio_owners existed in settings.yaml (or from a
+    broker export that never carries owner info at all, e.g. OP) has a blank
+    PortfolioOwner. build_positions() should backfill it from settings, same
+    as apply_portfolio_ownership() already does on the transactions side.
+    """
+    loaded = _with_settings(_BASE_SETTINGS_YAML.format(portfolio_owners="NORDNET: PERSON_A"), tmp_path)
+    old_cache = settings_module._SETTINGS_CACHE
+    try:
+        settings_module._SETTINGS_CACHE = loaded
+
+        path = tmp_path / "ParsedInvestments.xlsx"
+        _write_transactions(path, [
+            {"Broker": "NORDNET", "Portfolio": "1", "PortfolioOwner": "", "NormalizedInstrument": "SAMPO A", "TransactionType": "BUY", "TradeDate": "2021-01-01", "Quantity": 100, "CashAmount": -1000},
+        ])
+
+        positions, _ = build_positions(path, _no_instrument_master(tmp_path))
+
+        assert list(positions["PortfolioOwner"]) == ["PERSON_A"]
+    finally:
+        settings_module._SETTINGS_CACHE = old_cache
+
+
+def test_build_positions_opening_balance_row_gets_owner_from_settings(tmp_path):
+    """OpeningPositions rows are seeded straight from InstrumentMaster, not a
+    parsed broker export, so they have no PortfolioOwner of their own -
+    settings.yaml is the only place they can get one."""
+    loaded = _with_settings(_BASE_SETTINGS_YAML.format(portfolio_owners="OP: PERSON_A"), tmp_path)
+    old_cache = settings_module._SETTINGS_CACHE
+    try:
+        settings_module._SETTINGS_CACHE = loaded
+
+        investments_path = tmp_path / "ParsedInvestments.xlsx"
+        _write_transactions(investments_path, [
+            {"Broker": "OP", "Portfolio": "OP", "PortfolioOwner": "", "NormalizedInstrument": "OP-EUROOPPA PIENYHTIÖT A", "TransactionType": "SELL", "TradeDate": "2024-12-27", "Quantity": 0.5, "CashAmount": 30.0},
+        ])
+
+        instrument_master_path = tmp_path / "InstrumentMaster.xlsx"
+        _write_instrument_master(instrument_master_path, [
+            {"Broker": "OP", "Portfolio": "OP", "NormalizedInstrument": "OP-Eurooppa Pienyhtiöt A", "Date": "2013-10-10", "Quantity": 0.6},
+        ])
+
+        positions, _ = build_positions(investments_path, instrument_master_path)
+
+        rows = positions[positions["NormalizedInstrument"] == "OP-EUROOPPA PIENYHTIÖT A"]
+        assert list(rows["PortfolioOwner"]) == ["PERSON_A", "PERSON_A"]
+    finally:
+        settings_module._SETTINGS_CACHE = old_cache

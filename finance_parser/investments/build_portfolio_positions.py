@@ -6,6 +6,7 @@ from pathlib import Path
 import pandas as pd
 
 from finance_parser.common import normalise_header, normalise_text
+from finance_parser.settings import get_settings
 from finance_parser.utilities.fresh_workbook_writer import (
     read_workbook_values_only,
     records_to_sheet_values,
@@ -25,6 +26,7 @@ POSITIONS_SHEET = "PortfolioPositions"
 POSITIONS_COLUMNS = [
     "Broker",
     "Portfolio",
+    "PortfolioOwner",
     "NormalizedInstrument",
     "Date",
     "TransactionType",
@@ -117,6 +119,10 @@ def load_transactions(investments_workbook: Path) -> pd.DataFrame:
     df["Broker"] = df["Broker"].map(normalise_text)
     df["Portfolio"] = df["Portfolio"].map(normalise_text)
     df["TransactionType"] = df["TransactionType"].map(normalise_text)
+
+    if "PortfolioOwner" not in df.columns:
+        df["PortfolioOwner"] = ""
+    df["PortfolioOwner"] = df["PortfolioOwner"].map(normalise_text)
 
     return df
 
@@ -219,6 +225,23 @@ def build_positions(
     opening = load_opening_positions(instrument_master)
     if not opening.empty:
         df = pd.concat([df, opening], ignore_index=True, sort=False)
+
+    # Opening-position rows (seeded straight from InstrumentMaster, not a
+    # parsed broker export - see load_opening_positions()) have no
+    # PortfolioOwner of their own. Real InvestmentTransactions rows should
+    # already carry it (apply_portfolio_ownership() backfills the whole
+    # history on every investment_parser.py run), but derive it here too
+    # from settings.yaml wherever it's still blank, so every position row
+    # ends up attributed regardless of source.
+    if "PortfolioOwner" not in df.columns:
+        df["PortfolioOwner"] = ""
+    df["PortfolioOwner"] = df["PortfolioOwner"].fillna("").map(normalise_text)
+    blank_owner = df["PortfolioOwner"] == ""
+    if blank_owner.any():
+        settings = get_settings()
+        df.loc[blank_owner, "PortfolioOwner"] = df.loc[blank_owner].apply(
+            lambda r: settings.portfolio_owner(r["Broker"], r["Portfolio"]), axis=1
+        )
 
     df["QuantityDelta"] = df.apply(classify_quantity_delta, axis=1)
     df["CashDelta"] = df.apply(classify_cash_delta, axis=1)
