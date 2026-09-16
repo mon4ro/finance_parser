@@ -1,11 +1,17 @@
 from datetime import date
+from pathlib import Path
 
+import pandas as pd
 import pytest
 from openpyxl import Workbook
 
+from finance_parser import settings as settings_module
+from finance_parser.settings import AppSettings
 from finance_parser.investments.build_monthly_position_value import (
+    build_cash_balance_rows,
     build_monthly_values,
     last_completed_month_end,
+    load_cash_balance_source,
 )
 
 
@@ -19,6 +25,7 @@ TRANSACTIONS_HEADERS = [
     "Broker", "Portfolio", "PortfolioOwner", "PortfolioType", "NormalizedInstrument",
     "TransactionType", "TradeDate", "CashAmount",
 ]
+RAW_TRANSACTIONS_HEADERS = ["Broker", "Portfolio", "TradeDate", "CashAmount", "CashBalance"]
 
 
 def _write_sheet(path, sheet_name, headers, rows):
@@ -45,6 +52,58 @@ def _fx(path, rows):
 
 def _transactions(path, rows):
     _write_sheet(path, "InvestmentTransactions", TRANSACTIONS_HEADERS, rows)
+
+
+def _raw_transactions(path, rows):
+    """
+    Appends a RawInvestmentTransactions sheet to an existing workbook (as
+    written by _transactions()) - openpyxl's default Workbook() would
+    otherwise overwrite it, so this loads and re-saves in place.
+    """
+    from openpyxl import load_workbook
+
+    wb = load_workbook(path)
+    ws = wb.create_sheet("RawInvestmentTransactions")
+    ws.append(RAW_TRANSACTIONS_HEADERS)
+    for row in rows:
+        ws.append([row.get(h, "") for h in RAW_TRANSACTIONS_HEADERS])
+    wb.save(path)
+
+
+_CASH_SETTINGS_YAML = """
+project:
+  name: "Test"
+  locale: "fi_FI"
+  default_currency: "EUR"
+
+paths:
+  budgeting_input: "input/budgeting"
+  budgeting_output: "output/budgeting/ParsedTransactions.xlsx"
+  budgeting_rules: "rules/budgeting/TransactionRules.xlsx"
+  investment_input: "input/investments"
+  investment_output: "output/investments/ParsedInvestments.xlsx"
+  investment_rules: "rules/investments/InstrumentMaster.xlsx"
+
+budgeting:
+  default_include: "YES"
+  source_bank_aliases: {}
+  source_account_inference: {}
+
+investments:
+  portfolio_owners:
+    NORDNET:
+      "1": "PERSON_A"
+    EVLI: "PERSON_A"
+  portfolio_types:
+    NORDNET:
+      "1": "OSAKESAASTOTILI"
+"""
+
+
+def _with_cash_settings(tmp_path: Path) -> AppSettings:
+    settings_path = tmp_path / "settings.yaml"
+    settings_path.write_text(_CASH_SETTINGS_YAML, encoding="utf-8")
+    return AppSettings.load(settings_path=settings_path, example_path=Path("does-not-exist.yaml"))
 
 
 def test_last_completed_month_end():
@@ -349,3 +408,207 @@ def test_no_investments_workbook_defaults_dividend_columns_to_zero(tmp_path):
 
     assert result.iloc[0]["DividendGrossEUR"] == 0.0
     assert result.iloc[0]["CumulativeDividendNetEUR"] == 0.0
+
+
+def test_portfolio_type_carried_through_from_positions(tmp_path):
+    positions_path = tmp_path / "PortfolioPositions.xlsx"
+    prices_path = tmp_path / "InstrumentPrices.xlsx"
+    fx_path = tmp_path / "FXRates.xlsx"
+
+    _write_sheet(
+        positions_path,
+        "PortfolioPositions",
+        POSITIONS_HEADERS + ["PortfolioType"],
+        [{"Broker": "NORDNET", "Portfolio": "1", "PortfolioOwner": "PERSON_A", "PortfolioType": "OSAKESAASTOTILI", "NormalizedInstrument": "SAMPO A", "Date": "2021-03-15", "CumulativeQuantity": 100, "CumulativeNetInvested": -1000}],
+    )
+    _prices(prices_path, [
+        {"NormalizedInstrument": "SAMPO A", "Date": "2021-03-31", "Close": 12.0, "Currency": "EUR"},
+    ])
+    _fx(fx_path, [])
+
+    result, stats = build_monthly_values(positions_path, prices_path, fx_path, as_of=date(2021, 4, 5))
+
+    assert result.iloc[0]["PortfolioType"] == "OSAKESAASTOTILI"
+
+
+def test_portfolio_type_blank_when_positions_sheet_predates_the_column(tmp_path):
+    positions_path = tmp_path / "PortfolioPositions.xlsx"
+    prices_path = tmp_path / "InstrumentPrices.xlsx"
+    fx_path = tmp_path / "FXRates.xlsx"
+
+    _positions(positions_path, [
+        {"Broker": "NORDNET", "Portfolio": "1", "NormalizedInstrument": "SAMPO A", "Date": "2021-03-15", "CumulativeQuantity": 100, "CumulativeNetInvested": -1000},
+    ])
+    _prices(prices_path, [
+        {"NormalizedInstrument": "SAMPO A", "Date": "2021-03-31", "Close": 12.0, "Currency": "EUR"},
+    ])
+    _fx(fx_path, [])
+
+    result, stats = build_monthly_values(positions_path, prices_path, fx_path, as_of=date(2021, 4, 5))
+
+    assert result.iloc[0]["PortfolioType"] == ""
+
+
+def test_load_cash_balance_source_filters_to_tracked_brokers_only(tmp_path):
+    path = tmp_path / "ParsedInvestments.xlsx"
+    _write_sheet(path, "RawInvestmentTransactions", RAW_TRANSACTIONS_HEADERS, [
+        {"Broker": "NORDNET", "Portfolio": "1", "TradeDate": "2021-01-15", "CashAmount": 100.0, "CashBalance": 100.0},
+        {"Broker": "EVLI", "Portfolio": "EVLI", "TradeDate": "2021-01-15", "CashAmount": 50.0, "CashBalance": ""},
+        {"Broker": "OP", "Portfolio": "OP", "TradeDate": "2021-01-15", "CashAmount": 20.0, "CashBalance": ""},
+        {"Broker": "SELIGSON", "Portfolio": "SELIGSON", "TradeDate": "2021-01-15", "CashAmount": 20.0, "CashBalance": ""},
+    ])
+
+    source = load_cash_balance_source(path)
+
+    assert set(source["Broker"]) == {"NORDNET", "EVLI"}
+
+
+def test_load_cash_balance_source_missing_sheet_returns_empty(tmp_path):
+    """A workbook written before RawInvestmentTransactions existed (or a
+    test fixture that only sets up InvestmentTransactions) must not error."""
+    path = tmp_path / "ParsedInvestments.xlsx"
+    _transactions(path, [])
+
+    source = load_cash_balance_source(path)
+
+    assert len(source) == 0
+
+
+def test_cash_balance_rows_nordnet_uses_raw_cash_balance_field_directly(tmp_path):
+    source = pd.DataFrame([
+        {"Broker": "NORDNET", "Portfolio": "1", "TradeDate": pd.Timestamp("2021-01-10"), "CashAmount": -100.0, "CashBalance": 400.0},
+        {"Broker": "NORDNET", "Portfolio": "1", "TradeDate": pd.Timestamp("2021-02-05"), "CashAmount": 50.0, "CashBalance": 450.0},
+    ])
+
+    loaded = _with_cash_settings(tmp_path)
+    old_cache = settings_module._SETTINGS_CACHE
+    try:
+        settings_module._SETTINGS_CACHE = loaded
+        rows = build_cash_balance_rows(source, pd.Timestamp("2021-02-28"))
+    finally:
+        settings_module._SETTINGS_CACHE = old_cache
+
+    by_month = {r["MonthEnd"]: r for r in rows}
+    assert by_month["2021-01-31"]["MarketValueEUR"] == 400.0
+    assert by_month["2021-02-28"]["MarketValueEUR"] == 450.0
+    assert by_month["2021-01-31"]["PortfolioOwner"] == "PERSON_A"
+    assert by_month["2021-01-31"]["PortfolioType"] == "OSAKESAASTOTILI"
+    assert by_month["2021-01-31"]["NormalizedInstrument"] == "CASH"
+
+
+def test_cash_balance_rows_evli_reconstructed_via_cumsum(tmp_path):
+    """EVLI's export never populates CashBalance - reconstruct it as a
+    running cumsum of every CashAmount seen, since there's no other record."""
+    source = pd.DataFrame([
+        {"Broker": "EVLI", "Portfolio": "EVLI", "TradeDate": pd.Timestamp("2021-01-10"), "CashAmount": 175.0, "CashBalance": None},
+        {"Broker": "EVLI", "Portfolio": "EVLI", "TradeDate": pd.Timestamp("2021-02-10"), "CashAmount": 175.0, "CashBalance": None},
+        {"Broker": "EVLI", "Portfolio": "EVLI", "TradeDate": pd.Timestamp("2021-02-20"), "CashAmount": -300.0, "CashBalance": None},
+    ])
+
+    loaded = _with_cash_settings(tmp_path)
+    old_cache = settings_module._SETTINGS_CACHE
+    try:
+        settings_module._SETTINGS_CACHE = loaded
+        rows = build_cash_balance_rows(source, pd.Timestamp("2021-02-28"))
+    finally:
+        settings_module._SETTINGS_CACHE = old_cache
+
+    by_month = {r["MonthEnd"]: r for r in rows}
+    assert by_month["2021-01-31"]["MarketValueEUR"] == 175.0
+    # 175 + 175 - 300 = 50
+    assert by_month["2021-02-28"]["MarketValueEUR"] == 50.0
+
+
+def test_cash_balance_rows_zero_balance_kept_not_dropped(tmp_path):
+    source = pd.DataFrame([
+        {"Broker": "EVLI", "Portfolio": "EVLI", "TradeDate": pd.Timestamp("2021-01-10"), "CashAmount": 100.0, "CashBalance": None},
+        {"Broker": "EVLI", "Portfolio": "EVLI", "TradeDate": pd.Timestamp("2021-01-15"), "CashAmount": -100.0, "CashBalance": None},
+    ])
+
+    loaded = _with_cash_settings(tmp_path)
+    old_cache = settings_module._SETTINGS_CACHE
+    try:
+        settings_module._SETTINGS_CACHE = loaded
+        rows = build_cash_balance_rows(source, pd.Timestamp("2021-01-31"))
+    finally:
+        settings_module._SETTINGS_CACHE = old_cache
+
+    assert len(rows) == 1
+    assert rows[0]["MarketValueEUR"] == 0.0
+
+
+def test_cash_balance_rows_excludes_months_before_first_event(tmp_path):
+    source = pd.DataFrame([
+        {"Broker": "EVLI", "Portfolio": "EVLI", "TradeDate": pd.Timestamp("2021-03-10"), "CashAmount": 100.0, "CashBalance": None},
+    ])
+
+    loaded = _with_cash_settings(tmp_path)
+    old_cache = settings_module._SETTINGS_CACHE
+    try:
+        settings_module._SETTINGS_CACHE = loaded
+        rows = build_cash_balance_rows(source, pd.Timestamp("2021-04-30"))
+    finally:
+        settings_module._SETTINGS_CACHE = old_cache
+
+    assert [r["MonthEnd"] for r in rows] == ["2021-03-31", "2021-04-30"]
+
+
+def test_build_monthly_values_includes_cash_balance_rows_alongside_instruments(tmp_path):
+    positions_path = tmp_path / "PortfolioPositions.xlsx"
+    prices_path = tmp_path / "InstrumentPrices.xlsx"
+    fx_path = tmp_path / "FXRates.xlsx"
+    investments_path = tmp_path / "ParsedInvestments.xlsx"
+
+    _positions(positions_path, [
+        {"Broker": "NORDNET", "Portfolio": "1", "NormalizedInstrument": "SAMPO A", "Date": "2021-01-15", "CumulativeQuantity": 100, "CumulativeNetInvested": -1000},
+    ])
+    _prices(prices_path, [
+        {"NormalizedInstrument": "SAMPO A", "Date": "2021-01-31", "Close": 10.0, "Currency": "EUR"},
+    ])
+    _fx(fx_path, [])
+    _transactions(investments_path, [])
+    _raw_transactions(investments_path, [
+        {"Broker": "NORDNET", "Portfolio": "1", "TradeDate": "2021-01-20", "CashAmount": 200.0, "CashBalance": 200.0},
+    ])
+
+    loaded = _with_cash_settings(tmp_path)
+    old_cache = settings_module._SETTINGS_CACHE
+    try:
+        settings_module._SETTINGS_CACHE = loaded
+        result, stats = build_monthly_values(positions_path, prices_path, fx_path, investments_path, as_of=date(2021, 2, 5))
+    finally:
+        settings_module._SETTINGS_CACHE = old_cache
+
+    assert stats["cash_balance_rows"] == 1
+    cash_rows = result[result["NormalizedInstrument"] == "CASH"]
+    assert len(cash_rows) == 1
+    assert cash_rows.iloc[0]["MarketValueEUR"] == 200.0
+    instrument_rows = result[result["NormalizedInstrument"] == "SAMPO A"]
+    assert len(instrument_rows) == 1
+
+
+def test_no_cash_balance_rows_for_untracked_brokers(tmp_path):
+    """OP/Nordea (bank-tracked elsewhere) and Seligson (direct-purchase only,
+    no cash account) never produce a CASH row."""
+    positions_path = tmp_path / "PortfolioPositions.xlsx"
+    prices_path = tmp_path / "InstrumentPrices.xlsx"
+    fx_path = tmp_path / "FXRates.xlsx"
+    investments_path = tmp_path / "ParsedInvestments.xlsx"
+
+    _positions(positions_path, [
+        {"Broker": "OP", "Portfolio": "OP", "NormalizedInstrument": "SAMPO A", "Date": "2021-01-15", "CumulativeQuantity": 100, "CumulativeNetInvested": -1000},
+    ])
+    _prices(prices_path, [
+        {"NormalizedInstrument": "SAMPO A", "Date": "2021-01-31", "Close": 10.0, "Currency": "EUR"},
+    ])
+    _fx(fx_path, [])
+    _transactions(investments_path, [])
+    _raw_transactions(investments_path, [
+        {"Broker": "OP", "Portfolio": "OP", "TradeDate": "2021-01-20", "CashAmount": 200.0, "CashBalance": 200.0},
+        {"Broker": "SELIGSON", "Portfolio": "SELIGSON", "TradeDate": "2021-01-20", "CashAmount": 200.0, "CashBalance": 200.0},
+    ])
+
+    result, stats = build_monthly_values(positions_path, prices_path, fx_path, investments_path, as_of=date(2021, 2, 5))
+
+    assert stats["cash_balance_rows"] == 0
+    assert "CASH" not in set(result["NormalizedInstrument"])

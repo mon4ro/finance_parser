@@ -424,3 +424,54 @@ def test_average_cost_basis_handles_multiple_buys_then_sell_dca_style(tmp_path):
 
     result_rows = positions[positions["NormalizedInstrument"] == "OP-MALTILLINEN A"]
     assert result_rows["CumulativeNetInvested"].iloc[-1] == pytest.approx(0.0, abs=1e-9)
+
+
+_PORTFOLIO_TYPE_SETTINGS_YAML = """
+project:
+  name: "Test"
+  locale: "fi_FI"
+  default_currency: "EUR"
+
+paths:
+  budgeting_input: "input/budgeting"
+  budgeting_output: "output/budgeting/ParsedTransactions.xlsx"
+  budgeting_rules: "rules/budgeting/TransactionRules.xlsx"
+  investment_input: "input/investments"
+  investment_output: "output/investments/ParsedInvestments.xlsx"
+  investment_rules: "rules/investments/InstrumentMaster.xlsx"
+
+budgeting:
+  default_include: "YES"
+  source_bank_aliases: {}
+  source_account_inference: {}
+
+investments:
+  portfolio_owners: {}
+  portfolio_types:
+    NORDNET:
+      "1": "OSAKESAASTOTILI"
+"""
+
+
+def test_build_positions_backfills_blank_portfolio_type_from_settings(tmp_path):
+    """Same reasoning as the PortfolioOwner backfill above - a row with no
+    PortfolioType (parsed before the column existed, or from a broker export
+    that never carries it) should get it from settings.yaml."""
+    settings_path = tmp_path / "settings.yaml"
+    settings_path.write_text(_PORTFOLIO_TYPE_SETTINGS_YAML, encoding="utf-8")
+    loaded = AppSettings.load(settings_path=settings_path, example_path=Path("does-not-exist.yaml"))
+
+    old_cache = settings_module._SETTINGS_CACHE
+    try:
+        settings_module._SETTINGS_CACHE = loaded
+
+        path = tmp_path / "ParsedInvestments.xlsx"
+        _write_transactions(path, [
+            {"Broker": "NORDNET", "Portfolio": "1", "PortfolioOwner": "PERSON_A", "NormalizedInstrument": "SAMPO A", "TransactionType": "BUY", "TradeDate": "2021-01-01", "Quantity": 100, "CashAmount": -1000},
+        ])
+
+        positions, _ = build_positions(path, _no_instrument_master(tmp_path))
+
+        assert list(positions["PortfolioType"]) == ["OSAKESAASTOTILI"]
+    finally:
+        settings_module._SETTINGS_CACHE = old_cache

@@ -26,6 +26,7 @@ POSITIONS_COLUMNS = [
     "Broker",
     "Portfolio",
     "PortfolioOwner",
+    "PortfolioType",
     "NormalizedInstrument",
     "Date",
     "TransactionType",
@@ -128,6 +129,10 @@ def load_transactions(investments_workbook: Path) -> pd.DataFrame:
     if "PortfolioOwner" not in df.columns:
         df["PortfolioOwner"] = ""
     df["PortfolioOwner"] = df["PortfolioOwner"].map(normalise_text)
+
+    if "PortfolioType" not in df.columns:
+        df["PortfolioType"] = ""
+    df["PortfolioType"] = df["PortfolioType"].map(normalise_text)
 
     return df
 
@@ -328,6 +333,16 @@ def build_positions(
         settings = get_settings()
         df.loc[blank_owner, "PortfolioOwner"] = df.loc[blank_owner].apply(
             lambda r: settings.portfolio_owner(r["Broker"], r["Portfolio"]), axis=1
+        )
+
+    if "PortfolioType" not in df.columns:
+        df["PortfolioType"] = ""
+    df["PortfolioType"] = df["PortfolioType"].fillna("").map(normalise_text)
+    blank_type = df["PortfolioType"] == ""
+    if blank_type.any():
+        settings = get_settings()
+        df.loc[blank_type, "PortfolioType"] = df.loc[blank_type].apply(
+            lambda r: settings.portfolio_type(r["Broker"], r["Portfolio"]), axis=1
         )
 
     df["QuantityDelta"] = df.apply(classify_quantity_delta, axis=1)

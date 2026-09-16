@@ -8,6 +8,7 @@ import pandas as pd
 
 from finance_parser.common import normalise_header, normalise_text
 from finance_parser.investments.build_dividend_history import load_dividend_events
+from finance_parser.settings import get_settings
 from finance_parser.utilities.fresh_workbook_writer import (
     records_to_sheet_values,
     replace_with_fresh_workbook,
@@ -23,7 +24,7 @@ DEFAULT_OUTPUT_WORKBOOK = PROJECT_ROOT / "output" / "investments" / "MonthlyPosi
 
 MONTHLY_VALUE_SHEET = "MonthlyPositionValue"
 MONTHLY_VALUE_COLUMNS = [
-    "MonthEnd", "Year", "Month", "Broker", "Portfolio", "PortfolioOwner",
+    "MonthEnd", "Year", "Month", "Broker", "Portfolio", "PortfolioOwner", "PortfolioType",
     "NormalizedInstrument", "CumulativeQuantity", "PriceLocal", "InstrumentCurrency",
     "PriceDate", "FXRate", "FXDate", "MarketValueEUR",
     "CumulativeNetInvested", "UnrealizedGainEUR", "UnrealizedGainPercent",
@@ -32,6 +33,14 @@ MONTHLY_VALUE_COLUMNS = [
 ]
 
 DIVIDEND_EVENT_COLUMNS = ["Broker", "Portfolio", "NormalizedInstrument", "TradeDate", "GrossDividendEUR", "TaxWithheldEUR", "NetDividendEUR"]
+
+# Brokers where cash sitting unreinvested in the account (AOT/OST balance)
+# is worth tracking as its own net-worth line. Deliberately excludes OP and
+# Nordea (their cash lives in ordinary bank accounts already tracked on the
+# budgeting side) and Seligson (direct fund purchase only - real data and
+# the user both confirm no cash ever sits in a Seligson account).
+CASH_TRACKED_BROKERS = {"NORDNET", "EVLI"}
+CASH_INSTRUMENT_LABEL = "CASH"
 
 BASE_CURRENCY = "EUR"
 QUANTITY_EPSILON = 1e-6
@@ -51,6 +60,10 @@ def load_portfolio_positions(path: Path) -> pd.DataFrame:
     if "PortfolioOwner" not in df.columns:
         df["PortfolioOwner"] = ""
     df["PortfolioOwner"] = df["PortfolioOwner"].map(normalise_text)
+
+    if "PortfolioType" not in df.columns:
+        df["PortfolioType"] = ""
+    df["PortfolioType"] = df["PortfolioType"].map(normalise_text)
 
     return df.dropna(subset=["Date"]).sort_values("Date")
 
@@ -132,6 +145,136 @@ def _monthly_dividend_table(group_events: pd.DataFrame, months: pd.DatetimeIndex
     return result
 
 
+def load_cash_balance_source(investments_workbook: Path) -> pd.DataFrame:
+    """
+    RawInvestmentTransactions rows for CASH_TRACKED_BROKERS only. Reads the
+    raw sheet (not InvestmentTransactions) specifically because it's the
+    only one carrying Nordnet's real CashBalance ("Saldo") column -
+    InvestmentTransactions deliberately doesn't include it (not a normal
+    per-transaction field). PortfolioOwner/PortfolioType are NOT read from
+    here - the raw sheet never gets apply_portfolio_ownership()'s backfill
+    (only InvestmentTransactions does, see investment_parser.py), so they're
+    looked up fresh from settings.yaml in build_cash_balance_rows() instead.
+
+    Missing sheet (e.g. an investments workbook written before this raw
+    sheet existed, or a test fixture that only sets up InvestmentTransactions)
+    is not an error - just no cash-balance rows to add.
+    """
+    empty = pd.DataFrame(columns=["Broker", "Portfolio", "TradeDate", "CashAmount", "CashBalance"])
+    try:
+        df = pd.read_excel(investments_workbook, sheet_name="RawInvestmentTransactions", dtype=object, engine="openpyxl")
+    except ValueError:
+        return empty
+    df.columns = [normalise_header(c) for c in df.columns]
+    if "Broker" not in df.columns:
+        return empty
+
+    df["Broker"] = df["Broker"].map(normalise_text)
+    df = df[df["Broker"].isin(CASH_TRACKED_BROKERS)].copy()
+
+    df["Portfolio"] = df["Portfolio"].map(normalise_text)
+    df["TradeDate"] = pd.to_datetime(df["TradeDate"], errors="coerce")
+    df = df.dropna(subset=["TradeDate"])
+    df["CashAmount"] = pd.to_numeric(df["CashAmount"], errors="coerce").fillna(0.0)
+    df["CashBalance"] = pd.to_numeric(df["CashBalance"], errors="coerce")
+
+    return df
+
+
+def build_cash_balance_rows(cash_source: pd.DataFrame, last_month_end: pd.Timestamp) -> list[dict[str, object]]:
+    """
+    One row per month-end per (Broker, Portfolio), NormalizedInstrument=
+    "CASH" - uninvested cash sitting in a Nordnet or EVLI account (AOT/OST
+    balance, not yet reinvested or withdrawn). Two different
+    reconstructions, by necessity:
+
+    - Nordnet's export carries its own running CashBalance ("Saldo") on
+      every row - use it directly (merge_asof backward to each month-end,
+      same pattern as instrument prices/FX rates elsewhere in this file).
+    - EVLI's export never populates CashBalance (confirmed against real
+      data: 0 of ~130 real rows have it) - reconstruct it as a chronological
+      cumsum of every CashAmount the account has ever seen (deposits,
+      buy/sell proceeds, dividends, withdrawals - all of it), since there's
+      no other record of it.
+
+    A month with zero cash balance is still a real, meaningful data point
+    (fully withdrawn/reinvested) and is kept, not dropped - only a month
+    before the account's first-ever event is excluded (mirrors
+    month_end_dates()'s existing behavior for instrument positions).
+    """
+    if len(cash_source) == 0:
+        return []
+
+    settings = get_settings()
+    rows: list[dict[str, object]] = []
+
+    for (broker, portfolio), group in cash_source.groupby(["Broker", "Portfolio"], sort=False):
+        group = group.sort_values("TradeDate")
+        months = month_end_dates(group["TradeDate"].iloc[0], last_month_end)
+        if len(months) == 0:
+            continue
+
+        if broker == "NORDNET":
+            balance_source = (
+                group.dropna(subset=["CashBalance"])[["TradeDate", "CashBalance"]]
+                .rename(columns={"CashBalance": "Balance"})
+            )
+        else:
+            group = group.copy()
+            group["Balance"] = group["CashAmount"].cumsum()
+            balance_source = group[["TradeDate", "Balance"]]
+
+        if len(balance_source) == 0:
+            continue
+
+        candidates = pd.DataFrame({"MonthEnd": months})
+        merged = pd.merge_asof(
+            candidates,
+            balance_source.sort_values("TradeDate"),
+            left_on="MonthEnd",
+            right_on="TradeDate",
+            direction="backward",
+        )
+        merged = merged.dropna(subset=["Balance"])
+
+        owner = normalise_text(settings.portfolio_owner(broker, portfolio))
+        portfolio_type = normalise_text(settings.portfolio_type(broker, portfolio))
+
+        for _, r in merged.iterrows():
+            month_end = r["MonthEnd"]
+            rows.append({
+                "MonthEnd": month_end.strftime("%Y-%m-%d"),
+                "Year": month_end.year,
+                "Month": month_end.month,
+                "Broker": broker,
+                "Portfolio": portfolio,
+                "PortfolioOwner": owner,
+                "PortfolioType": portfolio_type,
+                "NormalizedInstrument": CASH_INSTRUMENT_LABEL,
+                "CumulativeQuantity": "",
+                "PriceLocal": "",
+                "InstrumentCurrency": "EUR",
+                "PriceDate": "",
+                "FXRate": "",
+                "FXDate": "",
+                "MarketValueEUR": round(float(r["Balance"]), 2),
+                # A cash balance isn't "invested" in an instrument and
+                # doesn't have a gain/loss concept of its own - these stay
+                # blank rather than 0, same convention as UnrealizedGainPercent's
+                # existing blank-when-not-applicable case just below.
+                "CumulativeNetInvested": "",
+                "UnrealizedGainEUR": "",
+                "UnrealizedGainPercent": "",
+                "DividendGrossEUR": "",
+                "DividendTaxEUR": "",
+                "DividendNetEUR": "",
+                "CumulativeDividendGrossEUR": "",
+                "CumulativeDividendNetEUR": "",
+            })
+
+    return rows
+
+
 def build_monthly_values(
     positions_workbook: Path,
     prices_workbook: Path,
@@ -158,6 +301,7 @@ def build_monthly_values(
     for (broker, portfolio, instrument), group in positions.groupby(group_cols, sort=False):
         group = group.sort_values("Date")
         owner = normalise_text(group["PortfolioOwner"].iloc[0]) if "PortfolioOwner" in group.columns else ""
+        portfolio_type = normalise_text(group["PortfolioType"].iloc[0]) if "PortfolioType" in group.columns else ""
         months = month_end_dates(group["Date"].iloc[0], last_month_end)
         if len(months) == 0:
             continue
@@ -232,6 +376,7 @@ def build_monthly_values(
                 "Broker": broker,
                 "Portfolio": portfolio,
                 "PortfolioOwner": owner,
+                "PortfolioType": portfolio_type,
                 "NormalizedInstrument": instrument,
                 "CumulativeQuantity": quantity,
                 "PriceLocal": price_local,
@@ -265,12 +410,19 @@ def build_monthly_values(
                 "CumulativeDividendNetEUR": round(float(r["CumulativeDividendNetEUR"]), 2),
             })
 
+    cash_rows: list[dict[str, object]] = []
+    if investments_workbook is not None and investments_workbook.exists():
+        cash_source = load_cash_balance_source(investments_workbook)
+        cash_rows = build_cash_balance_rows(cash_source, last_month_end)
+        rows.extend(cash_rows)
+
     result = pd.DataFrame(rows, columns=MONTHLY_VALUE_COLUMNS)
     if len(result) > 0:
         result = result.sort_values(["NormalizedInstrument", "Broker", "Portfolio", "MonthEnd"]).reset_index(drop=True)
 
     stats = {
         "rows_produced": len(result),
+        "cash_balance_rows": len(cash_rows),
         "last_month_end": last_month_end.strftime("%Y-%m-%d"),
         "missing_price_instrument_months": sorted(missing_price),
         "missing_fx_currency_months": sorted(missing_fx),
@@ -305,7 +457,7 @@ def build_arg_parser() -> argparse.ArgumentParser:
     parser.add_argument("--positions-workbook", default=str(DEFAULT_POSITIONS_WORKBOOK))
     parser.add_argument("--prices-workbook", default=str(DEFAULT_PRICES_WORKBOOK))
     parser.add_argument("--fx-rates-workbook", default=str(DEFAULT_FX_RATES_WORKBOOK))
-    parser.add_argument("--investments-workbook", default=str(DEFAULT_INVESTMENTS_WORKBOOK), help="Source of dividend/tax events.")
+    parser.add_argument("--investments-workbook", default=str(DEFAULT_INVESTMENTS_WORKBOOK), help="Source of dividend/tax events and Nordnet/EVLI cash balances.")
     parser.add_argument("--output-workbook", default=str(DEFAULT_OUTPUT_WORKBOOK))
     parser.add_argument("--dry-run", action="store_true")
     return parser
@@ -335,6 +487,7 @@ def main() -> None:
     print("Monthly position value rebuild complete." if not args.dry_run else "Dry run complete.")
     print(f"Last completed month-end used: {stats['last_month_end']}")
     print(f"Rows produced:                 {stats['rows_produced']}")
+    print(f"  of which CASH balance rows:  {stats['cash_balance_rows']}")
 
     if stats["missing_price_instrument_months"]:
         print()
