@@ -25,7 +25,7 @@ TRANSACTIONS_HEADERS = [
     "Broker", "Portfolio", "PortfolioOwner", "PortfolioType", "NormalizedInstrument",
     "TransactionType", "TradeDate", "CashAmount",
 ]
-RAW_TRANSACTIONS_HEADERS = ["Broker", "Portfolio", "TradeDate", "CashAmount", "CashBalance"]
+RAW_TRANSACTIONS_HEADERS = ["Broker", "Portfolio", "TradeDate", "CashAmount", "CashBalance", "TransactionTypeRaw"]
 
 
 def _write_sheet(path, sheet_name, headers, rows):
@@ -498,11 +498,12 @@ def test_cash_balance_rows_nordnet_uses_raw_cash_balance_field_directly(tmp_path
 
 def test_cash_balance_rows_evli_reconstructed_via_cumsum(tmp_path):
     """EVLI's export never populates CashBalance - reconstruct it as a
-    running cumsum of every CashAmount seen, since there's no other record."""
+    running cumsum of every CashAmount seen (excluding sell proceeds, see
+    the dedicated test below), since there's no other record."""
     source = pd.DataFrame([
-        {"Broker": "EVLI", "Portfolio": "EVLI", "TradeDate": pd.Timestamp("2021-01-10"), "CashAmount": 175.0, "CashBalance": None},
-        {"Broker": "EVLI", "Portfolio": "EVLI", "TradeDate": pd.Timestamp("2021-02-10"), "CashAmount": 175.0, "CashBalance": None},
-        {"Broker": "EVLI", "Portfolio": "EVLI", "TradeDate": pd.Timestamp("2021-02-20"), "CashAmount": -300.0, "CashBalance": None},
+        {"Broker": "EVLI", "Portfolio": "EVLI", "TradeDate": pd.Timestamp("2021-01-10"), "CashAmount": 175.0, "CashBalance": None, "TransactionTypeRaw": "SAVINGS"},
+        {"Broker": "EVLI", "Portfolio": "EVLI", "TradeDate": pd.Timestamp("2021-02-10"), "CashAmount": 175.0, "CashBalance": None, "TransactionTypeRaw": "SAVINGS"},
+        {"Broker": "EVLI", "Portfolio": "EVLI", "TradeDate": pd.Timestamp("2021-02-20"), "CashAmount": -300.0, "CashBalance": None, "TransactionTypeRaw": "SHARE PURCHASE"},
     ])
 
     loaded = _with_cash_settings(tmp_path)
@@ -519,10 +520,42 @@ def test_cash_balance_rows_evli_reconstructed_via_cumsum(tmp_path):
     assert by_month["2021-02-28"]["MarketValueEUR"] == 50.0
 
 
+def test_cash_balance_rows_evli_excludes_sell_proceeds(tmp_path):
+    """
+    Real bug: EVLI's Sell/Sell of purchased share proceeds are wired
+    straight to the linked bank account at settlement - they never sit in
+    EVLI as cash. Confirmed on the budgeting side: two real EVLI
+    withdrawals landed in the bank within days of a sale, each close to (one
+    exactly, minus a flat fee) that sale's total proceeds. Including these
+    in the cumsum made the reconstructed balance grow forever with no
+    matching outflow - caught by the user as an impossible ever-growing
+    figure.
+    """
+    source = pd.DataFrame([
+        {"Broker": "EVLI", "Portfolio": "EVLI", "TradeDate": pd.Timestamp("2021-01-10"), "CashAmount": 200.0, "CashBalance": None, "TransactionTypeRaw": "SAVINGS"},
+        {"Broker": "EVLI", "Portfolio": "EVLI", "TradeDate": pd.Timestamp("2021-02-10"), "CashAmount": 5000.0, "CashBalance": None, "TransactionTypeRaw": "SELL"},
+        {"Broker": "EVLI", "Portfolio": "EVLI", "TradeDate": pd.Timestamp("2021-02-11"), "CashAmount": 3000.0, "CashBalance": None, "TransactionTypeRaw": "SELL OF PURCHASED SHARE"},
+    ])
+
+    loaded = _with_cash_settings(tmp_path)
+    old_cache = settings_module._SETTINGS_CACHE
+    try:
+        settings_module._SETTINGS_CACHE = loaded
+        rows = build_cash_balance_rows(source, pd.Timestamp("2021-02-28"))
+    finally:
+        settings_module._SETTINGS_CACHE = old_cache
+
+    by_month = {r["MonthEnd"]: r for r in rows}
+    # Both sell rows are excluded entirely - balance stays at the deposit
+    # amount, not 200 + 5000 + 3000.
+    assert by_month["2021-01-31"]["MarketValueEUR"] == 200.0
+    assert by_month["2021-02-28"]["MarketValueEUR"] == 200.0
+
+
 def test_cash_balance_rows_zero_balance_kept_not_dropped(tmp_path):
     source = pd.DataFrame([
-        {"Broker": "EVLI", "Portfolio": "EVLI", "TradeDate": pd.Timestamp("2021-01-10"), "CashAmount": 100.0, "CashBalance": None},
-        {"Broker": "EVLI", "Portfolio": "EVLI", "TradeDate": pd.Timestamp("2021-01-15"), "CashAmount": -100.0, "CashBalance": None},
+        {"Broker": "EVLI", "Portfolio": "EVLI", "TradeDate": pd.Timestamp("2021-01-10"), "CashAmount": 100.0, "CashBalance": None, "TransactionTypeRaw": "SAVINGS"},
+        {"Broker": "EVLI", "Portfolio": "EVLI", "TradeDate": pd.Timestamp("2021-01-15"), "CashAmount": -100.0, "CashBalance": None, "TransactionTypeRaw": "SHARE PURCHASE"},
     ])
 
     loaded = _with_cash_settings(tmp_path)
@@ -539,7 +572,7 @@ def test_cash_balance_rows_zero_balance_kept_not_dropped(tmp_path):
 
 def test_cash_balance_rows_excludes_months_before_first_event(tmp_path):
     source = pd.DataFrame([
-        {"Broker": "EVLI", "Portfolio": "EVLI", "TradeDate": pd.Timestamp("2021-03-10"), "CashAmount": 100.0, "CashBalance": None},
+        {"Broker": "EVLI", "Portfolio": "EVLI", "TradeDate": pd.Timestamp("2021-03-10"), "CashAmount": 100.0, "CashBalance": None, "TransactionTypeRaw": "SAVINGS"},
     ])
 
     loaded = _with_cash_settings(tmp_path)

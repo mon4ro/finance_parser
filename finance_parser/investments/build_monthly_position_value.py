@@ -42,6 +42,21 @@ DIVIDEND_EVENT_COLUMNS = ["Broker", "Portfolio", "NormalizedInstrument", "TradeD
 CASH_TRACKED_BROKERS = {"NORDNET", "EVLI"}
 CASH_INSTRUMENT_LABEL = "CASH"
 
+# Real bug found and fixed: EVLI's Sell/Sell of purchased share proceeds do
+# NOT stay inside EVLI as cash - they're wired straight to the linked bank
+# account at settlement. Confirmed against real data on the budgeting side:
+# two real EVLI withdrawals ("Withdrawal from EAM account (ESSP)") landed in
+# the bank within days of a sale, each within a few percent of that sale's
+# total proceeds (one matched to the exact cent minus a flat fee). Including
+# these in the EVLI cash cumsum made the reconstructed balance grow forever
+# with no corresponding outflow ever recorded (EVLI's own "Cash transferred"
+# event type is unrelated - a much smaller, separate administrative
+# cleanup), producing an impossible/ever-growing "cash held" figure the user
+# caught immediately as unrealistic. Excluding these two types entirely (as
+# if they never touched EVLI's own float) is correct precisely because the
+# money never did.
+EVLI_SELL_PROCEEDS_TYPES = {"SELL", "SELL OF PURCHASED SHARE"}
+
 BASE_CURRENCY = "EUR"
 QUANTITY_EPSILON = 1e-6
 
@@ -160,7 +175,7 @@ def load_cash_balance_source(investments_workbook: Path) -> pd.DataFrame:
     sheet existed, or a test fixture that only sets up InvestmentTransactions)
     is not an error - just no cash-balance rows to add.
     """
-    empty = pd.DataFrame(columns=["Broker", "Portfolio", "TradeDate", "CashAmount", "CashBalance"])
+    empty = pd.DataFrame(columns=["Broker", "Portfolio", "TradeDate", "CashAmount", "CashBalance", "TransactionTypeRaw"])
     try:
         df = pd.read_excel(investments_workbook, sheet_name="RawInvestmentTransactions", dtype=object, engine="openpyxl")
     except ValueError:
@@ -177,6 +192,9 @@ def load_cash_balance_source(investments_workbook: Path) -> pd.DataFrame:
     df = df.dropna(subset=["TradeDate"])
     df["CashAmount"] = pd.to_numeric(df["CashAmount"], errors="coerce").fillna(0.0)
     df["CashBalance"] = pd.to_numeric(df["CashBalance"], errors="coerce")
+    if "TransactionTypeRaw" not in df.columns:
+        df["TransactionTypeRaw"] = ""
+    df["TransactionTypeRaw"] = df["TransactionTypeRaw"].map(normalise_text).str.upper()
 
     return df
 
@@ -193,9 +211,10 @@ def build_cash_balance_rows(cash_source: pd.DataFrame, last_month_end: pd.Timest
       same pattern as instrument prices/FX rates elsewhere in this file).
     - EVLI's export never populates CashBalance (confirmed against real
       data: 0 of ~130 real rows have it) - reconstruct it as a chronological
-      cumsum of every CashAmount the account has ever seen (deposits,
-      buy/sell proceeds, dividends, withdrawals - all of it), since there's
-      no other record of it.
+      cumsum of every CashAmount the account has ever seen EXCEPT
+      EVLI_SELL_PROCEEDS_TYPES (deposits, dividends, purchases, withdrawals -
+      everything but sell proceeds, which are paid straight to the bank and
+      never actually sit in EVLI as cash - see that constant's docstring).
 
     A month with zero cash balance is still a real, meaningful data point
     (fully withdrawn/reinvested) and is kept, not dropped - only a month
@@ -221,7 +240,8 @@ def build_cash_balance_rows(cash_source: pd.DataFrame, last_month_end: pd.Timest
             )
         else:
             group = group.copy()
-            group["Balance"] = group["CashAmount"].cumsum()
+            counted_cash = group["CashAmount"].where(~group["TransactionTypeRaw"].isin(EVLI_SELL_PROCEEDS_TYPES), 0.0)
+            group["Balance"] = counted_cash.cumsum()
             balance_source = group[["TradeDate", "Balance"]]
 
         if len(balance_source) == 0:
