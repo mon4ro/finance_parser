@@ -1,0 +1,274 @@
+from __future__ import annotations
+
+import argparse
+from datetime import date
+from pathlib import Path
+
+import pandas as pd
+
+from finance_parser.common import normalise_header, normalise_text
+from finance_parser.utilities.fresh_workbook_writer import (
+    read_workbook_values_only,
+    records_to_sheet_values,
+    replace_with_fresh_workbook,
+    write_fresh_workbook,
+)
+
+PROJECT_ROOT = Path(__file__).resolve().parents[2]
+DEFAULT_POSITIONS_WORKBOOK = PROJECT_ROOT / "output" / "investments" / "PortfolioPositions.xlsx"
+DEFAULT_PRICES_WORKBOOK = PROJECT_ROOT / "output" / "investments" / "InstrumentPrices.xlsx"
+DEFAULT_FX_RATES_WORKBOOK = PROJECT_ROOT / "output" / "investments" / "FXRates.xlsx"
+DEFAULT_OUTPUT_WORKBOOK = PROJECT_ROOT / "output" / "investments" / "MonthlyPositionValue.xlsx"
+
+MONTHLY_VALUE_SHEET = "MonthlyPositionValue"
+MONTHLY_VALUE_COLUMNS = [
+    "MonthEnd", "Broker", "Portfolio", "NormalizedInstrument",
+    "CumulativeQuantity", "PriceLocal", "PriceDate", "InstrumentCurrency",
+    "FXRate", "FXDate", "MarketValueEUR", "CumulativeNetInvested",
+    "UnrealizedGainEUR",
+]
+
+BASE_CURRENCY = "EUR"
+QUANTITY_EPSILON = 1e-6
+
+
+def load_portfolio_positions(path: Path) -> pd.DataFrame:
+    df = pd.read_excel(path, sheet_name="PortfolioPositions", dtype=object, engine="openpyxl")
+    df.columns = [normalise_header(c) for c in df.columns]
+
+    df["Broker"] = df["Broker"].map(normalise_text)
+    df["Portfolio"] = df["Portfolio"].map(normalise_text)
+    df["NormalizedInstrument"] = df["NormalizedInstrument"].map(normalise_text)
+    df["Date"] = pd.to_datetime(df["Date"], errors="coerce")
+    df["CumulativeQuantity"] = pd.to_numeric(df["CumulativeQuantity"], errors="coerce")
+    df["CumulativeNetInvested"] = pd.to_numeric(df["CumulativeNetInvested"], errors="coerce")
+
+    return df.dropna(subset=["Date"]).sort_values("Date")
+
+
+def load_instrument_prices(path: Path) -> pd.DataFrame:
+    df = pd.read_excel(path, sheet_name="InstrumentPrices", dtype=object, engine="openpyxl")
+    df.columns = [normalise_header(c) for c in df.columns]
+
+    df["NormalizedInstrument"] = df["NormalizedInstrument"].map(normalise_text)
+    df["Currency"] = df["Currency"].map(normalise_text).str.upper()
+    df["Date"] = pd.to_datetime(df["Date"], errors="coerce")
+    df["Close"] = pd.to_numeric(df["Close"], errors="coerce")
+
+    return df.dropna(subset=["Date"]).sort_values("Date")
+
+
+def load_fx_rates(path: Path) -> pd.DataFrame:
+    if not path.exists():
+        return pd.DataFrame(columns=["Currency", "Date", "Rate"])
+
+    df = pd.read_excel(path, sheet_name="FXRates", dtype=object, engine="openpyxl")
+    df.columns = [normalise_header(c) for c in df.columns]
+
+    df["Currency"] = df["Currency"].map(normalise_text).str.upper()
+    df["Date"] = pd.to_datetime(df["Date"], errors="coerce")
+    df["Rate"] = pd.to_numeric(df["Rate"], errors="coerce")
+
+    return df.dropna(subset=["Date"]).sort_values("Date")
+
+
+def last_completed_month_end(today: date) -> pd.Timestamp:
+    first_of_this_month = pd.Timestamp(today).replace(day=1)
+    return first_of_this_month - pd.Timedelta(days=1)
+
+
+def month_end_dates(first_event_date: pd.Timestamp, last_month_end: pd.Timestamp) -> pd.DatetimeIndex:
+    if first_event_date > last_month_end:
+        return pd.DatetimeIndex([])
+    return pd.date_range(start=first_event_date, end=last_month_end, freq="ME")
+
+
+def build_monthly_values(
+    positions_workbook: Path,
+    prices_workbook: Path,
+    fx_rates_workbook: Path,
+    *,
+    as_of: date | None = None,
+) -> tuple[pd.DataFrame, dict[str, object]]:
+    positions = load_portfolio_positions(positions_workbook)
+    prices = load_instrument_prices(prices_workbook)
+    fx_rates = load_fx_rates(fx_rates_workbook)
+
+    last_month_end = last_completed_month_end(as_of or date.today())
+
+    group_cols = ["Broker", "Portfolio", "NormalizedInstrument"]
+    rows: list[dict[str, object]] = []
+    missing_price: set[tuple[str, str]] = set()
+    missing_fx: set[tuple[str, str]] = set()
+
+    for (broker, portfolio, instrument), group in positions.groupby(group_cols, sort=False):
+        group = group.sort_values("Date")
+        months = month_end_dates(group["Date"].iloc[0], last_month_end)
+        if len(months) == 0:
+            continue
+
+        candidates = pd.DataFrame({"MonthEnd": months})
+        as_of_position = pd.merge_asof(
+            candidates,
+            group[["Date", "CumulativeQuantity", "CumulativeNetInvested"]],
+            left_on="MonthEnd",
+            right_on="Date",
+            direction="backward",
+        )
+        as_of_position = as_of_position[as_of_position["CumulativeQuantity"] > QUANTITY_EPSILON]
+        if len(as_of_position) == 0:
+            continue
+
+        instrument_prices = prices[prices["NormalizedInstrument"] == instrument][["Date", "Close", "Currency"]]
+        with_price = pd.merge_asof(
+            as_of_position.sort_values("MonthEnd"),
+            instrument_prices.sort_values("Date"),
+            left_on="MonthEnd",
+            right_on="Date",
+            direction="backward",
+            suffixes=("", "_price"),
+        )
+
+        for _, r in with_price.iterrows():
+            month_end = r["MonthEnd"]
+
+            if pd.isna(r["Close"]):
+                missing_price.add((instrument, month_end.strftime("%Y-%m")))
+                continue
+
+            currency = r["Currency"] or BASE_CURRENCY
+
+            if currency == BASE_CURRENCY:
+                fx_rate = 1.0
+                fx_date = month_end
+            else:
+                currency_rates = fx_rates[fx_rates["Currency"] == currency][["Date", "Rate"]].sort_values("Date")
+                fx_match = pd.merge_asof(
+                    pd.DataFrame({"MonthEnd": [month_end]}),
+                    currency_rates,
+                    left_on="MonthEnd",
+                    right_on="Date",
+                    direction="backward",
+                )
+                if pd.isna(fx_match["Rate"].iloc[0]):
+                    missing_fx.add((currency, month_end.strftime("%Y-%m")))
+                    continue
+                fx_rate = float(fx_match["Rate"].iloc[0])
+                fx_date = fx_match["Date"].iloc[0]
+
+            quantity = float(r["CumulativeQuantity"])
+            price_local = float(r["Close"])
+            market_value_eur = quantity * price_local * fx_rate
+            net_invested = float(r["CumulativeNetInvested"])
+
+            rows.append({
+                "MonthEnd": month_end.strftime("%Y-%m-%d"),
+                "Broker": broker,
+                "Portfolio": portfolio,
+                "NormalizedInstrument": instrument,
+                "CumulativeQuantity": quantity,
+                "PriceLocal": price_local,
+                "PriceDate": r["Date_price"].strftime("%Y-%m-%d") if "Date_price" in r and pd.notna(r["Date_price"]) else r["Date"].strftime("%Y-%m-%d"),
+                "InstrumentCurrency": currency,
+                "FXRate": fx_rate,
+                "FXDate": fx_date.strftime("%Y-%m-%d") if pd.notna(fx_date) else "",
+                "MarketValueEUR": round(market_value_eur, 2),
+                "CumulativeNetInvested": round(net_invested, 2),
+                "UnrealizedGainEUR": round(market_value_eur - net_invested, 2),
+            })
+
+    result = pd.DataFrame(rows, columns=MONTHLY_VALUE_COLUMNS)
+    if len(result) > 0:
+        result = result.sort_values(["NormalizedInstrument", "Broker", "Portfolio", "MonthEnd"]).reset_index(drop=True)
+
+    stats = {
+        "rows_produced": len(result),
+        "last_month_end": last_month_end.strftime("%Y-%m-%d"),
+        "missing_price_instrument_months": sorted(missing_price),
+        "missing_fx_currency_months": sorted(missing_fx),
+    }
+
+    return result, stats
+
+
+def write_monthly_value_workbook(output_workbook: Path, monthly_values: pd.DataFrame) -> None:
+    headers = list(MONTHLY_VALUE_COLUMNS)
+    records = monthly_values.to_dict("records")
+    sheets = {MONTHLY_VALUE_SHEET: records_to_sheet_values(headers, records)}
+
+    if output_workbook.exists():
+        replace_with_fresh_workbook(
+            output_workbook,
+            sheets,
+            backup_label="before_monthly_value_rebuild",
+            basic_formatting=True,
+            excel_tables=False,
+        )
+    else:
+        write_fresh_workbook(output_workbook, sheets, basic_formatting=True, excel_tables=False)
+
+
+def build_arg_parser() -> argparse.ArgumentParser:
+    parser = argparse.ArgumentParser(
+        description="Recompute MonthlyPositionValue.xlsx from scratch: month-end EUR market value per "
+                    "(Broker, Portfolio, NormalizedInstrument), from PortfolioPositions x InstrumentPrices x FXRates. "
+                    "Always a full rebuild, never incremental - same reasoning as build_portfolio_positions.py."
+    )
+    parser.add_argument("--positions-workbook", default=str(DEFAULT_POSITIONS_WORKBOOK))
+    parser.add_argument("--prices-workbook", default=str(DEFAULT_PRICES_WORKBOOK))
+    parser.add_argument("--fx-rates-workbook", default=str(DEFAULT_FX_RATES_WORKBOOK))
+    parser.add_argument("--output-workbook", default=str(DEFAULT_OUTPUT_WORKBOOK))
+    parser.add_argument("--dry-run", action="store_true")
+    return parser
+
+
+def _summarize_missing(pairs: list[tuple[str, str]]) -> list[tuple[str, int, str, str]]:
+    """Group (key, month) pairs into (key, count, earliest_month, latest_month), sorted by count descending."""
+    by_key: dict[str, list[str]] = {}
+    for key, month in pairs:
+        by_key.setdefault(key, []).append(month)
+
+    summary = [(key, len(months), min(months), max(months)) for key, months in by_key.items()]
+    return sorted(summary, key=lambda row: row[1], reverse=True)
+
+
+def main() -> None:
+    args = build_arg_parser().parse_args()
+
+    positions_workbook = Path(args.positions_workbook).expanduser().resolve()
+    prices_workbook = Path(args.prices_workbook).expanduser().resolve()
+    fx_rates_workbook = Path(args.fx_rates_workbook).expanduser().resolve()
+    output_workbook = Path(args.output_workbook).expanduser().resolve()
+
+    monthly_values, stats = build_monthly_values(positions_workbook, prices_workbook, fx_rates_workbook)
+
+    print("Monthly position value rebuild complete." if not args.dry_run else "Dry run complete.")
+    print(f"Last completed month-end used: {stats['last_month_end']}")
+    print(f"Rows produced:                 {stats['rows_produced']}")
+
+    if stats["missing_price_instrument_months"]:
+        print()
+        total = len(stats["missing_price_instrument_months"])
+        print(f"Instrument-months with no price data available ({total} total), skipped, by instrument:")
+        for instrument, count, earliest, latest in _summarize_missing(stats["missing_price_instrument_months"]):
+            print(f"  - {instrument}: {count} month(s), {earliest} to {latest}")
+
+    if stats["missing_fx_currency_months"]:
+        print()
+        total = len(stats["missing_fx_currency_months"])
+        print(f"Currency-months with no FX rate available ({total} total), skipped, by currency:")
+        for currency, count, earliest, latest in _summarize_missing(stats["missing_fx_currency_months"]):
+            print(f"  - {currency}: {count} month(s), {earliest} to {latest}")
+
+    if args.dry_run:
+        print()
+        print("Dry run only: workbook was not modified.")
+        return
+
+    write_monthly_value_workbook(output_workbook, monthly_values)
+    print()
+    print(f"Output workbook: {output_workbook}")
+
+
+if __name__ == "__main__":
+    main()
