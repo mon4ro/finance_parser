@@ -100,11 +100,44 @@ def parse_import_files(
     parsed_frames = []
     broker_raw_frames: dict[str, list[pd.DataFrame]] = {}
     log_rows = []
-    errors = []
 
+    # Two distinct failure modes, mirroring the same fix on the budgeting
+    # side (transaction_parser.py) - deliberately handled differently:
+    #
+    # 1. Unsupported file - no parser recognises it at all (or an ambiguous
+    #    match). Almost always just an unrelated file in the input folder
+    #    (real case: a manual reference workbook sitting next to real broker
+    #    exports). Warn, skip that one file, keep processing everything else.
+    #
+    # 2. Format drift - a parser matched the file but then failed to
+    #    actually parse it, meaning the broker's export format probably
+    #    changed underneath us. Louder signal, but still only skips that one
+    #    file - an unrelated broker's file having a problem shouldn't block
+    #    everything else from importing.
+    #
+    # Previously both were lumped into one `errors` list that aborted the
+    # ENTIRE run with nothing written, even for files that parsed fine -
+    # confirmed harmful in practice (a stray non-broker file killed an
+    # entire investment import batch).
     for file in files:
         try:
             parser_module, detection_reason = detect_parser(file)
+        except ValueError as exc:
+            print(f"WARNING: skipping {file.name} - {exc}")
+            log_rows.append({
+                "ImportRunID": import_run_id,
+                "ImportedAt": imported_at,
+                "Broker": "",
+                "SourceFile": file.name,
+                "RowsRead": 0,
+                "RowsNew": "",
+                "RowsDuplicate": "",
+                "Status": "Skipped: unsupported file",
+                "Error": str(exc),
+            })
+            continue
+
+        try:
             parsed = parser_module.parse_file(file, imported_at)
             parsed_frames.append(parsed)
 
@@ -129,24 +162,21 @@ def parse_import_files(
             print(f"Parsed {file.name}: {parser_module.BROKER}, {len(parsed)} rows")
 
         except Exception as exc:
-            errors.append(f"{file.name}:\n{exc}")
+            print(
+                f"ERROR: {file.name} looks like a {parser_module.BROKER} export, but parsing it "
+                f"failed - the format may have changed. Skipping this file.\n  {exc}"
+            )
             log_rows.append({
                 "ImportRunID": import_run_id,
                 "ImportedAt": imported_at,
-                "Broker": "",
+                "Broker": parser_module.BROKER,
                 "SourceFile": file.name,
                 "RowsRead": 0,
                 "RowsNew": 0,
                 "RowsDuplicate": 0,
-                "Status": "Failed",
+                "Status": "Skipped: format drift",
                 "Error": str(exc),
             })
-
-    if errors:
-        raise ValueError(
-            "One or more investment input files could not be parsed. Output was not written.\n\n"
-            + "\n\n".join(errors)
-        )
 
     if parsed_frames:
         combined_raw = pd.concat(parsed_frames, ignore_index=True)

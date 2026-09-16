@@ -146,7 +146,26 @@ def parse_import_files(
     import_log_frames: list[pd.DataFrame] = []
     bank_raw_sheets: dict[str, list[pd.DataFrame]] = {}
 
-    errors: list[str] = []
+    # Two distinct failure modes, deliberately handled differently:
+    #
+    # 1. Unsupported file - no parser recognises it at all. Almost always
+    #    just an unrelated file that ended up in the input folder (real case:
+    #    a manual reference workbook sitting next to real broker exports).
+    #    Warn, skip that one file, keep processing everything else.
+    #
+    # 2. Format drift - a parser matched the file (by name/shape heuristics)
+    #    but then failed to actually parse it, meaning the broker's export
+    #    format probably changed underneath us. This is a much louder signal
+    #    something needs human attention, but still only skips that one file
+    #    - an unrelated broker's file having a real problem shouldn't block
+    #    everything else from importing.
+    #
+    # Previously both cases were lumped into one `errors` list that aborted
+    # the ENTIRE run with nothing written, even for files that parsed fine -
+    # confirmed harmful in practice (a stray non-broker file killed an entire
+    # investment import batch).
+    unsupported_files: list[str] = []
+    format_drift_files: list[str] = []
 
     t_parse = perf_counter()
 
@@ -162,10 +181,22 @@ def parse_import_files(
             match_reasons.append(f"{parser_module.SOURCE_BANK}: {reason}")
 
         if matched_parser is None:
-            errors.append(
-                f"{file.name}:\n"
-                + "Could not identify export type.\n"
-                + "\n".join(f"  - {reason}" for reason in match_reasons)
+            reason_text = "\n".join(f"  - {reason}" for reason in match_reasons)
+            print(f"WARNING: skipping {file.name} - no matching parser.\n{reason_text}")
+            unsupported_files.append(file.name)
+            import_log_frames.append(
+                pd.DataFrame([{
+                    "ImportRunID": import_run_id,
+                    "SourceFile": file.name,
+                    "SourceBank": "",
+                    "ImportedAt": imported_at,
+                    "ExportDate": export_date_from_file(file),
+                    "RowsRead": 0,
+                    "RowsNew": 0,
+                    "RowsDuplicate": 0,
+                    "Status": "Skipped: unsupported file",
+                    "Notes": reason_text,
+                }])
             )
             continue
 
@@ -195,15 +226,28 @@ def parse_import_files(
                 }])
             )
         except Exception as exc:
-            errors.append(f"{file.name}:\n{type(exc).__name__}: {exc}")
+            error_text = f"{type(exc).__name__}: {exc}"
+            print(
+                f"ERROR: {file.name} looks like a {matched_parser.SOURCE_BANK} export, but parsing it "
+                f"failed - the format may have changed. Skipping this file.\n  {error_text}"
+            )
+            format_drift_files.append(f"{file.name} ({matched_parser.SOURCE_BANK}): {error_text}")
+            import_log_frames.append(
+                pd.DataFrame([{
+                    "ImportRunID": import_run_id,
+                    "SourceFile": file.name,
+                    "SourceBank": matched_parser.SOURCE_BANK,
+                    "ImportedAt": imported_at,
+                    "ExportDate": export_date_from_file(file),
+                    "RowsRead": 0,
+                    "RowsNew": 0,
+                    "RowsDuplicate": 0,
+                    "Status": "Skipped: format drift",
+                    "Notes": error_text,
+                }])
+            )
 
     profile_log(profile, "parse input files", t_parse)
-
-    if errors:
-        raise ValueError(
-            "One or more input files could not be parsed. Output was not written.\n\n"
-            + "\n\n".join(errors)
-        )
 
     non_empty_frames = [
         frame
@@ -212,7 +256,14 @@ def parse_import_files(
     ]
 
     if not non_empty_frames:
-        raise ValueError("No transaction rows were parsed from the input files.")
+        problems = []
+        if unsupported_files:
+            problems.append("Unsupported files: " + ", ".join(unsupported_files))
+        if format_drift_files:
+            problems.append("Format drift: " + "; ".join(format_drift_files))
+        raise ValueError(
+            "No transaction rows were parsed from the input files.\n" + "\n".join(problems)
+        )
 
     combined_raw = pd.concat(non_empty_frames, ignore_index=True)
     combined_raw = combined_raw.drop_duplicates(subset=["RawID"], keep="first")
