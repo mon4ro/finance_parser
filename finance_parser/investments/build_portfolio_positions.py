@@ -83,11 +83,17 @@ QUANTITY_RESET_TYPES = {"SPLIT AP JÄTTÖ"}
 # JÄTTÖ reset above - explicitly neutral, not "unhandled".
 KNOWN_NEUTRAL_SPLIT_PAIR_TYPES = {"SPLIT AP OTTO"}
 
-# Cash-flow "net invested" classification: only real buy/sell cash flows
-# count. Dividends, interest, fees, tax, and deposits/withdrawals are
-# deliberately excluded - they don't represent money invested in the
-# instrument itself.
-CASH_FLOW_TYPES = {"BUY", "SELL"}
+# Cash-flow "net invested" classification: real buy/sell cash flows, plus
+# the same quantity-add events that can carry an unrecorded (CashAmount=0)
+# cost basis - OPENING BALANCE (see load_opening_positions()) and the
+# VAIHTO - JÄTTÖ / VAIHTO AP-JÄTTÖ transfer-in events. All default to 0.0
+# (unknown cost basis, same as before) unless manually corrected - via
+# OpeningPositions' own CashAmount column, or for a real already-imported
+# transaction, correct_transaction_cash_amount.py - in which case the
+# corrected amount must count the same as an actual purchase would.
+# Dividends, interest, fees, tax, and deposits/withdrawals are deliberately
+# excluded - they don't represent money invested in the instrument itself.
+CASH_FLOW_TYPES = {"BUY", "SELL", "OPENING BALANCE", "VAIHTO - JÄTTÖ", "VAIHTO AP-JÄTTÖ"}
 
 # Confidently understood as having NO effect on quantity or invested cash -
 # real cash-flow/informational events, not a gap in coverage. Kept separate
@@ -160,7 +166,15 @@ def load_opening_positions(instrument_master_path: Path) -> pd.DataFrame:
     df["NormalizedInstrument"] = df["NormalizedInstrument"].map(normalise_text).str.upper()
     df["_TradeDate"] = pd.to_datetime(df["Date"], errors="coerce")
     df["Quantity"] = pd.to_numeric(df["Quantity"], errors="coerce").fillna(0.0)
-    df["CashAmount"] = 0.0
+    # Honor a manually-supplied cost basis if the sheet has one (e.g. a
+    # gift's tax-assessed value, treated as if that amount had been paid in
+    # cash for the position) - defaults to 0.0 (unknown cost basis) only
+    # when the sheet has no CashAmount column at all or leaves it blank for
+    # a given row, matching every other "manual override, never guessed"
+    # pattern in this project.
+    if "CashAmount" not in df.columns:
+        df["CashAmount"] = 0.0
+    df["CashAmount"] = pd.to_numeric(df["CashAmount"], errors="coerce").fillna(0.0)
     df["TransactionType"] = "OPENING BALANCE"
 
     return df[_OPENING_POSITIONS_COLUMNS]
@@ -285,12 +299,25 @@ def build_positions(
         negative_rows.groupby(group_cols)["CumulativeQuantity"].min().to_dict()
     )
 
+    # Net invested is a cost-basis figure - it should never be positive
+    # (money paid in is always <= 0 under this project's cash-flow sign
+    # convention). A positive value means the quantity currently held
+    # arrived with an unrecorded cost basis (a gift/transfer event with
+    # CashDelta=0, e.g. OpeningPositions or a VAIHTO - JÄTTÖ delivery) and a
+    # later sell added real proceeds on top of that unknown zero, producing
+    # a fictitious "gain" - flag it instead of silently reporting it.
+    positive_invested_rows = active[active["CumulativeNetInvested"] > 1e-6]
+    positive_invested_summary = (
+        positive_invested_rows.groupby(group_cols)["CumulativeNetInvested"].max().to_dict()
+    )
+
     stats = {
         "transactions_scanned": len(df),
         "position_rows": len(active),
         "unhandled_types": unhandled_summary,
         "unhandled_rows": int(unhandled_mask.sum()),
         "negative_quantity_instruments": negative_summary,
+        "positive_net_invested_instruments": positive_invested_summary,
     }
 
     return active[POSITIONS_COLUMNS].reset_index(drop=True), stats
@@ -350,6 +377,14 @@ def main() -> None:
         for key, min_qty in stats["negative_quantity_instruments"].items():
             print(f"  - {key}: minimum computed quantity {min_qty}")
         print("  This TransactionType mapping does not correctly model what actually happened here - review needed.")
+
+    if stats["positive_net_invested_instruments"]:
+        print()
+        print("WARNING: computed a positive (impossible) net invested amount for:")
+        for key, max_invested in stats["positive_net_invested_instruments"].items():
+            print(f"  - {key}: maximum computed net invested {max_invested}")
+        print("  This quantity likely arrived with an unrecorded cost basis (a gift/transfer event with no")
+        print("  recorded cash amount) - review needed, real cost basis may need to be filled in manually.")
 
     if args.dry_run:
         print()

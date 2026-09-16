@@ -55,7 +55,7 @@ def _write_transactions(path, rows):
     wb.save(path)
 
 
-OPENING_POSITIONS_HEADERS = ["Broker", "Portfolio", "NormalizedInstrument", "Date", "Quantity", "Notes"]
+OPENING_POSITIONS_HEADERS = ["Broker", "Portfolio", "NormalizedInstrument", "Date", "Quantity", "CashAmount", "Notes"]
 
 
 def _write_instrument_master(path, opening_position_rows):
@@ -157,6 +157,27 @@ def test_build_positions_excludes_known_neutral_types_from_unhandled_report(tmp_
     assert stats["unhandled_types"] == {"SOME UNKNOWN TYPE": 1}
 
 
+def test_build_positions_flags_positive_net_invested_as_warning_not_silent(tmp_path):
+    """
+    Real case: OP-Suomi A arrived via a VAIHTO - JÄTTÖ transfer with no
+    recorded cost (CashAmount=0 - the real cost is unknown, not zero), then
+    a later SELL added real proceeds on top of that unknown zero, making
+    CumulativeNetInvested go positive - implying a "gain" from investing
+    nothing. Must be flagged, not silently reported as if it were correct.
+    """
+    path = tmp_path / "ParsedInvestments.xlsx"
+    _write_transactions(path, [
+        {"Broker": "OP", "Portfolio": "OP", "NormalizedInstrument": "OP-SUOMI A", "TransactionType": "VAIHTO - JÄTTÖ", "TradeDate": "2017-09-22", "Quantity": 54.2698, "CashAmount": 0},
+        {"Broker": "OP", "Portfolio": "OP", "NormalizedInstrument": "OP-SUOMI A", "TransactionType": "SELL", "TradeDate": "2025-03-05", "Quantity": 29.2698, "CashAmount": 11862.76},
+    ])
+
+    positions, stats = build_positions(path, _no_instrument_master(tmp_path))
+
+    rows = positions[positions["NormalizedInstrument"] == "OP-SUOMI A"]
+    assert list(rows["CumulativeNetInvested"]) == [0.0, 11862.76]
+    assert stats["positive_net_invested_instruments"] == {("OP", "OP", "OP-SUOMI A"): 11862.76}
+
+
 def test_build_positions_excludes_blank_normalized_instrument_rows(tmp_path):
     path = tmp_path / "ParsedInvestments.xlsx"
     _write_transactions(path, [
@@ -197,6 +218,33 @@ def test_build_positions_seeds_opening_balance_before_real_transaction_history(t
     assert list(rows["TransactionType"]) == ["OPENING BALANCE", "SELL"]
     assert list(rows["CumulativeQuantity"]) == pytest.approx([0.78, 0.0039])
     assert stats["negative_quantity_instruments"] == {}
+
+
+def test_build_positions_honors_manually_supplied_opening_cost_basis(tmp_path):
+    """
+    A gift's real cost basis (e.g. its tax-assessed value at the time -
+    "I still assume I purchased them") can be manually supplied in
+    OpeningPositions' own CashAmount column, treated the same as if that
+    amount had actually been paid in cash. Without one, cost basis defaults
+    to 0.0 (unknown) - this must not silently stay 0 once a real value is
+    given, and must not make CumulativeNetInvested go positive after a
+    later profitable-looking sell (real bug this replaced).
+    """
+    investments_path = tmp_path / "ParsedInvestments.xlsx"
+    _write_transactions(investments_path, [
+        {"Broker": "OP", "Portfolio": "OP", "NormalizedInstrument": "OP-EUROOPPA PIENYHTIÖT A", "TransactionType": "SELL", "TradeDate": "2024-12-27", "Quantity": 0.7761, "CashAmount": 30.0},
+    ])
+
+    instrument_master_path = tmp_path / "InstrumentMaster.xlsx"
+    _write_instrument_master(instrument_master_path, [
+        {"Broker": "OP", "Portfolio": "OP", "NormalizedInstrument": "OP-Eurooppa Pienyhtiöt A", "Date": "2013-10-10", "Quantity": 0.78, "CashAmount": -100.0},
+    ])
+
+    positions, stats = build_positions(investments_path, instrument_master_path)
+
+    rows = positions[positions["NormalizedInstrument"] == "OP-EUROOPPA PIENYHTIÖT A"]
+    assert list(rows["CumulativeNetInvested"]) == [-100.0, -70.0]
+    assert stats["positive_net_invested_instruments"] == {}
 
 
 def test_build_positions_without_opening_positions_sheet_is_a_no_op(tmp_path):
