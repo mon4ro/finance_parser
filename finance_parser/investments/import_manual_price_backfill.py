@@ -40,7 +40,7 @@ MANUAL_PRICE_ROWS: dict[str, str] = {
     "OP-Eurooppa Pienyhtiöt A": "OP-EUROOPPA PIENYHTIÖT A",
     "OP-Suomi pienyhtiöt A": "OP-SUOMI PIENYHTIÖT A",
     "OP-Aasia Indeksi A": "OP-AASIA INDEKSI A",
-    "Franklin Technology Fund A (Acc) ": "FRANKLIN TECHNOLOGY A ACC",
+    "Franklin Technology Fund A (Acc)": "FRANKLIN TECHNOLOGY A ACC",
     "BlackRock Global Funds - World Technology Fund A2": "BGF WORLD TECHNOLOGY",
     "Nordnet Suomi-superrahasto": "NORDNET SUOMI INDEKSI",
     "Handelsbank USA indeksi": "HANDELSBANKEN USA INDEX",

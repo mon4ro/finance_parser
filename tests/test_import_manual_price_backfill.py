@@ -4,6 +4,7 @@ import openpyxl
 import pandas as pd
 from openpyxl import Workbook
 
+from finance_parser.common import normalise_text
 from finance_parser.investments.fetch_instrument_prices import PRICES_COLUMNS
 from finance_parser.investments.import_manual_price_backfill import (
     MANUAL_PRICE_ROWS,
@@ -11,6 +12,23 @@ from finance_parser.investments.import_manual_price_backfill import (
     read_manual_prices,
 )
 from finance_parser.investments.investment_common import INSTRUMENT_MASTER_COLUMNS
+
+
+def test_manual_price_rows_keys_survive_normalise_text():
+    """
+    Real bug: MANUAL_PRICE_ROWS had a key with a trailing space
+    ("Franklin Technology Fund A (Acc) "), but read_manual_prices() looks up
+    normalise_text(cell_value) - which strips it - so the lookup silently
+    failed and the entire instrument (110 real monthly values) never made it
+    into the import, with no error or warning. Every key here must equal its
+    own normalise_text() output, or the same silent-skip bug recurs for
+    whichever row is mistyped.
+    """
+    for raw_name in MANUAL_PRICE_ROWS:
+        assert raw_name == normalise_text(raw_name), (
+            f"MANUAL_PRICE_ROWS key {raw_name!r} would never match after normalise_text() "
+            f"(becomes {normalise_text(raw_name)!r}) - this row would be silently skipped"
+        )
 
 
 def _write_source(path, instrument_rows: dict[int, str], monthly_values: dict[int, dict[int, float]]):
