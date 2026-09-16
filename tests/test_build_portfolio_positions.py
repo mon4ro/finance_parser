@@ -148,6 +148,29 @@ def test_build_positions_flags_negative_quantity_as_warning_not_silent(tmp_path)
     assert stats["negative_quantity_instruments"] == {("OP", "OP", "OP-DELTA A"): -54.0}
 
 
+def test_build_positions_handles_jatto_siirto_transfer_in(tmp_path):
+    """
+    Real bug found and fixed: JÄTTÖ SIIRTO (a transfer-in event, same
+    meaning as VAIHTO - JÄTTÖ but its own distinct raw label) was previously
+    unhandled, which silently dropped an entire real holding from every
+    downstream output whenever it was the only event establishing that
+    holding's quantity - caught by the user directly asking to double-check
+    a real position missing from their output.
+    """
+    path = tmp_path / "ParsedInvestments.xlsx"
+    _write_transactions(path, [
+        {"Broker": "NORDNET", "Portfolio": "1", "NormalizedInstrument": "SAMPO A", "TransactionType": "JÄTTÖ SIIRTO", "TradeDate": "2021-05-01", "Quantity": 100, "CashAmount": 0},
+        {"Broker": "NORDNET", "Portfolio": "1", "NormalizedInstrument": "SAMPO A", "TransactionType": "DIVIDEND", "TradeDate": "2021-08-01", "Quantity": 100, "CashAmount": 25},
+    ])
+
+    positions, stats = build_positions(path, _no_instrument_master(tmp_path))
+
+    rows = positions[positions["NormalizedInstrument"] == "SAMPO A"]
+    assert list(rows["CumulativeQuantity"]) == [100.0]
+    assert list(rows["CumulativeNetInvested"]) == [0.0]
+    assert stats["unhandled_types"] == {}
+
+
 def test_build_positions_excludes_known_neutral_types_from_unhandled_report(tmp_path):
     path = tmp_path / "ParsedInvestments.xlsx"
     _write_transactions(path, [

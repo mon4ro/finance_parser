@@ -51,6 +51,14 @@ POSITIONS_COLUMNS = [
 QUANTITY_ADD_TYPES = {
     "BUY", "ALLOCATED", "DELIVERY", "MATCHING",
     "VAIHTO AP-JÄTTÖ", "VAIHTO - JÄTTÖ",
+    # Real bug found and fixed: a real transfer-in event type, same meaning
+    # as VAIHTO - JÄTTÖ (shares delivered in, no market purchase) but with
+    # its own distinct raw label. Previously unhandled, which silently
+    # dropped an entire real holding (Kesko A, with real ongoing dividend
+    # history - confirmed by the user checking their own real holdings)
+    # from every downstream output, since this was the ONLY event
+    # establishing that holding's quantity.
+    "JÄTTÖ SIIRTO",
     # Lehto 2020 rights issue: only the actual share-issuance step counts -
     # the payment/rights-attachment/rights-removal steps around it are about
     # the *rights*, not real share count, and are left unmapped (neutral) to
@@ -86,14 +94,15 @@ KNOWN_NEUTRAL_SPLIT_PAIR_TYPES = {"SPLIT AP OTTO"}
 # Cash-flow "net invested" classification: real buy/sell cash flows, plus
 # the same quantity-add events that can carry an unrecorded (CashAmount=0)
 # cost basis - OPENING BALANCE (see load_opening_positions()) and the
-# VAIHTO - JÄTTÖ / VAIHTO AP-JÄTTÖ transfer-in events. All default to 0.0
-# (unknown cost basis, same as before) unless manually corrected - via
-# OpeningPositions' own CashAmount column, or for a real already-imported
-# transaction, correct_transaction_cash_amount.py - in which case the
-# corrected amount must count the same as an actual purchase would.
+# VAIHTO - JÄTTÖ / VAIHTO AP-JÄTTÖ / JÄTTÖ SIIRTO transfer-in events. All
+# default to 0.0 (unknown cost basis, same as before) unless manually
+# corrected - via OpeningPositions' own CashAmount column, or for a real
+# already-imported transaction, correct_transaction_cash_amount.py - in
+# which case the corrected amount must count the same as an actual
+# purchase would.
 # Dividends, interest, fees, tax, and deposits/withdrawals are deliberately
 # excluded - they don't represent money invested in the instrument itself.
-CASH_FLOW_TYPES = {"BUY", "SELL", "OPENING BALANCE", "VAIHTO - JÄTTÖ", "VAIHTO AP-JÄTTÖ"}
+CASH_FLOW_TYPES = {"BUY", "SELL", "OPENING BALANCE", "VAIHTO - JÄTTÖ", "VAIHTO AP-JÄTTÖ", "JÄTTÖ SIIRTO"}
 
 # Confidently understood as having NO effect on quantity or invested cash -
 # real cash-flow/informational events, not a gap in coverage. Kept separate
