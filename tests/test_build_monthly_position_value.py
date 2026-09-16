@@ -76,7 +76,28 @@ def test_eur_instrument_market_value_and_gain(tmp_path):
     # 2200.0 (market value MINUS a negative net_invested, i.e. added
     # together) instead of the real gain (value minus amount actually paid).
     assert row["UnrealizedGainEUR"] == 200.0
+    assert row["UnrealizedGainPercent"] == 20.0
     assert row["FXRate"] == 1.0
+
+
+def test_unrealized_gain_percent_blank_when_net_invested_is_zero(tmp_path):
+    """A fully-sold-then-recovered-exactly (or genuinely unknown cost basis)
+    position has nothing sensible to divide by - blank, not an error."""
+    positions_path = tmp_path / "PortfolioPositions.xlsx"
+    prices_path = tmp_path / "InstrumentPrices.xlsx"
+    fx_path = tmp_path / "FXRates.xlsx"
+
+    _positions(positions_path, [
+        {"Broker": "NORDNET", "Portfolio": "1", "NormalizedInstrument": "SAMPO A", "Date": "2021-03-15", "CumulativeQuantity": 100, "CumulativeNetInvested": 0},
+    ])
+    _prices(prices_path, [
+        {"NormalizedInstrument": "SAMPO A", "Date": "2021-03-31", "Close": 12.0, "Currency": "EUR"},
+    ])
+    _fx(fx_path, [])
+
+    result, stats = build_monthly_values(positions_path, prices_path, fx_path, as_of=date(2021, 4, 5))
+
+    assert result.iloc[0]["UnrealizedGainPercent"] == ""
 
 
 def test_portfolio_owner_carried_through_from_positions(tmp_path):

@@ -27,7 +27,7 @@ MONTHLY_VALUE_COLUMNS = [
     "MonthEnd", "Year", "Month", "Broker", "Portfolio", "PortfolioOwner",
     "NormalizedInstrument", "CumulativeQuantity", "PriceLocal", "InstrumentCurrency",
     "PriceDate", "FXRate", "FXDate", "MarketValueEUR",
-    "CumulativeNetInvested", "UnrealizedGainEUR",
+    "CumulativeNetInvested", "UnrealizedGainEUR", "UnrealizedGainPercent",
     "DividendGrossEUR", "DividendTaxEUR", "DividendNetEUR",
     "CumulativeDividendGrossEUR", "CumulativeDividendNetEUR",
 ]
@@ -224,6 +224,7 @@ def build_monthly_values(
             price_local = float(r["Close"])
             market_value_eur = round(quantity * price_local * fx_rate, 2)
             net_invested = round(float(r["CumulativeNetInvested"]), 2)
+            unrealized_gain_eur = round(market_value_eur + net_invested, 2)
 
             rows.append({
                 "MonthEnd": month_end.strftime("%Y-%m-%d"),
@@ -250,7 +251,14 @@ def build_monthly_values(
                 # inputs are already rounded above so this always sums
                 # exactly to the two stored columns, not off by a cent from
                 # rounding market_value_eur/net_invested independently.
-                "UnrealizedGainEUR": round(market_value_eur + net_invested, 2),
+                "UnrealizedGainEUR": unrealized_gain_eur,
+                # Blank (not 0 or an error) when net_invested is 0 - a
+                # fully-sold-then-recovered-exactly position, or a genuinely
+                # unknown-cost-basis default - dividing by zero has no
+                # sensible percentage to show.
+                "UnrealizedGainPercent": (
+                    round(unrealized_gain_eur / abs(net_invested) * 100, 2) if net_invested != 0 else ""
+                ),
                 "DividendGrossEUR": round(float(r["DividendGrossEUR"]), 2),
                 "DividendTaxEUR": round(float(r["DividendTaxEUR"]), 2),
                 "DividendNetEUR": round(float(r["DividendNetEUR"]), 2),
