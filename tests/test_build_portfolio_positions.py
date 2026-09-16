@@ -171,6 +171,30 @@ def test_build_positions_handles_jatto_siirto_transfer_in(tmp_path):
     assert stats["unhandled_types"] == {}
 
 
+def test_build_positions_handles_osto_hinnaton_free_share_grant(tmp_path):
+    """
+    Real bug found and fixed: OP's OSTO - HINNATON ("purchase, priceless") is
+    a free-share acquisition, same failure pattern as JÄTTÖ SIIRTO above but
+    a different broker/label - previously unhandled, silently dropping an
+    entire real holding with real ongoing dividends. Unlike JÄTTÖ SIIRTO,
+    deliberately NOT in CASH_FLOW_TYPES (matches ALLOCATED/DELIVERY/MATCHING:
+    a free grant, not a transfer that might later get a manually-corrected
+    cost basis).
+    """
+    path = tmp_path / "ParsedInvestments.xlsx"
+    _write_transactions(path, [
+        {"Broker": "OP", "Portfolio": "OP", "NormalizedInstrument": "SAMPO A", "TransactionType": "OSTO - HINNATON", "TradeDate": "2021-05-01", "Quantity": 50, "CashAmount": 0},
+        {"Broker": "OP", "Portfolio": "OP", "NormalizedInstrument": "SAMPO A", "TransactionType": "DIVIDEND", "TradeDate": "2021-08-01", "Quantity": 50, "CashAmount": 15},
+    ])
+
+    positions, stats = build_positions(path, _no_instrument_master(tmp_path))
+
+    rows = positions[positions["NormalizedInstrument"] == "SAMPO A"]
+    assert list(rows["CumulativeQuantity"]) == [50.0]
+    assert list(rows["CumulativeNetInvested"]) == [0.0]
+    assert stats["unhandled_types"] == {}
+
+
 def test_build_positions_excludes_known_neutral_types_from_unhandled_report(tmp_path):
     path = tmp_path / "ParsedInvestments.xlsx"
     _write_transactions(path, [

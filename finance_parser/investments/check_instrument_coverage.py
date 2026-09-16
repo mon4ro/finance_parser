@@ -20,7 +20,7 @@ DEFAULT_POSITIONS_WORKBOOK = PROJECT_ROOT / "output" / "investments" / "Portfoli
 QUANTITY_EPSILON = 1e-6
 DEFAULT_STALE_DAYS = 7
 
-# The three gap classes this checks for, in order of severity:
+# The four gap classes this checks for, in order of severity:
 #
 # 1. unclassified - InstrumentMaster has no InstrumentType/Currency for a
 #    currently-held instrument. Nothing downstream can price it correctly.
@@ -31,14 +31,24 @@ DEFAULT_STALE_DAYS = 7
 #    than --stale-days. Real case this catches: BGF World Technology's
 #    dead Yahoo ticker left it "priced" but frozen at an April value for
 #    months before being caught by chance, not by any automated check.
+# 4. duplicate_instrument_mappings - the same real security (PriceSymbol)
+#    maps to more than one NormalizedInstrument spelling in
+#    InstrumentMaster.xlsx. Real case this catches: Fortum and Nokia were
+#    each silently fragmented into two separate instrument buckets because
+#    one broker's raw export included the "Oyj" suffix and another didn't -
+#    caught by the user directly asking whether another instrument had the
+#    same problem as a just-fixed missing holding, not by any automated
+#    check. See find_duplicate_instrument_mappings()'s own docstring.
 #
-# Deliberately scoped to ACTIVE positions only (CumulativeQuantity > epsilon
-# as of the latest known event per (Broker, Portfolio, NormalizedInstrument)
-# in PortfolioPositions.xlsx) - a defunct/fully-sold instrument (e.g.
-# OP-Delta A, a real permanent gap accepted earlier this project) must not
-# force this check to fail on every single run forever. Verified against
-# real data before building this: OP-Delta A and the two Pienyhtiot funds
-# all correctly fall out of the active set today.
+# Gap classes 1-3 are deliberately scoped to ACTIVE positions only
+# (CumulativeQuantity > epsilon as of the latest known event per (Broker,
+# Portfolio, NormalizedInstrument) in PortfolioPositions.xlsx) - a defunct/
+# fully-sold instrument (e.g. OP-Delta A, a real permanent gap accepted
+# earlier this project) must not force this check to fail on every single
+# run forever. Verified against real data before building this: OP-Delta A
+# and the two Pienyhtiot funds all correctly fall out of the active set
+# today. Gap class 4 deliberately is NOT scoped to active positions - see
+# find_duplicate_instrument_mappings().
 
 
 def active_instruments(positions_workbook: Path) -> pd.DataFrame:
@@ -89,6 +99,40 @@ def _best_master_row_by_name(master: pd.DataFrame) -> dict[str, dict]:
             best[name] = row_dict
 
     return best
+
+
+def find_duplicate_instrument_mappings(master: pd.DataFrame) -> dict[str, list[str]]:
+    """
+    Detect the exact bug class that silently fragmented Fortum and Nokia
+    into two separate NormalizedInstrument buckets each - the same real
+    security (same PriceSymbol) held under two different spellings, because
+    one broker's raw export includes the "Oyj" company suffix and another
+    doesn't, and nothing in InstrumentMaster.xlsx unified them. Both
+    fragments quietly showed up as fully "valid" (classified, priced) - this
+    is a distinct gap class from unclassified/unpriced/stale, since nothing
+    about either individual row looks wrong in isolation.
+
+    Deliberately scans the WHOLE InstrumentMaster sheet, not just active
+    positions (unlike the other gap classes below) - a duplicate mapping is
+    a property of the rules file itself, a latent bug waiting to fragment a
+    holding the moment it becomes active again (e.g. re-importing older
+    history, or a new purchase), not something that stops mattering just
+    because nothing is currently held under it.
+
+    Grouped by PriceSymbol specifically (not ISIN) since ISIN is
+    inconsistently populated across real rows in this project - PriceSymbol
+    is the strongest available "same real security" signal.
+    """
+    dupes: dict[str, list[str]] = {}
+    with_symbol = master[master["PriceSymbol"].map(normalise_text) != ""].copy()
+    with_symbol["_Symbol"] = with_symbol["PriceSymbol"].map(normalise_text)
+
+    for symbol, group in with_symbol.groupby("_Symbol"):
+        names = sorted(set(group["NormalizedInstrument"].map(normalise_text)) - {""})
+        if len(names) > 1:
+            dupes[symbol] = names
+
+    return dupes
 
 
 def find_coverage_gaps(
@@ -147,17 +191,22 @@ def find_coverage_gaps(
         "unclassified": sorted(unclassified),
         "unpriced": sorted(unpriced),
         "stale": sorted(stale),
+        "duplicate_instrument_mappings": find_duplicate_instrument_mappings(master),
     }
 
 
 def has_gaps(gaps: dict[str, object]) -> bool:
-    return bool(gaps["unclassified"] or gaps["unpriced"] or gaps["stale"])
+    return bool(
+        gaps["unclassified"] or gaps["unpriced"] or gaps["stale"]
+        or gaps["duplicate_instrument_mappings"]
+    )
 
 
 def build_arg_parser() -> argparse.ArgumentParser:
     parser = argparse.ArgumentParser(
         description="Check that every currently-active investment position has complete data "
-                    "(classification, price symbol, recent price) before it's trusted for net worth. "
+                    "(classification, price symbol, recent price) before it's trusted for net worth, and "
+                    "that InstrumentMaster.xlsx doesn't fragment the same real security into two spellings. "
                     "Exits non-zero if gaps are found, unless --force. Read-only - never writes anything."
     )
     parser.add_argument("--positions-workbook", default=str(DEFAULT_POSITIONS_WORKBOOK))
@@ -185,10 +234,16 @@ def main() -> None:
     print(f"Active positions checked: {gaps['active_instrument_count']}")
 
     if not has_gaps(gaps):
-        print("All active positions have complete data (classification, price symbol, recent price).")
+        print("All active positions have complete data (classification, price symbol, recent price, no duplicate mappings).")
         return
 
     print()
+    if gaps["duplicate_instrument_mappings"]:
+        print(f"DUPLICATE INSTRUMENT MAPPINGS ({len(gaps['duplicate_instrument_mappings'])}) - same PriceSymbol maps to multiple NormalizedInstrument spellings in InstrumentMaster.xlsx:")
+        for symbol, names in gaps["duplicate_instrument_mappings"].items():
+            print(f"  - {symbol}: {' / '.join(names)}")
+        print()
+
     if gaps["unclassified"]:
         print(f"UNCLASSIFIED ({len(gaps['unclassified'])}) - no InstrumentType/Currency in InstrumentMaster.xlsx:")
         for name in gaps["unclassified"]:

@@ -4,9 +4,14 @@ import pytest
 from openpyxl import Workbook
 
 from finance_parser.investments import check_instrument_coverage as check_module
-from finance_parser.investments.check_instrument_coverage import find_coverage_gaps, has_gaps
+from finance_parser.investments.check_instrument_coverage import (
+    find_coverage_gaps,
+    find_duplicate_instrument_mappings,
+    has_gaps,
+)
 from finance_parser.investments.fetch_instrument_prices import PRICES_COLUMNS
 from finance_parser.investments.investment_common import INSTRUMENT_MASTER_COLUMNS
+from finance_parser.investments.investment_common import load_instrument_master
 
 
 POSITIONS_HEADERS = [
@@ -175,6 +180,62 @@ def test_duplicate_normalized_instrument_rows_do_not_hide_the_real_classificatio
     gaps = find_coverage_gaps(positions_path, master_path, prices_path)
 
     assert not has_gaps(gaps)
+
+
+def test_duplicate_price_symbol_across_spellings_is_flagged(tmp_path):
+    """
+    Real bug found and fixed: the same real security (same PriceSymbol) can
+    end up under two different NormalizedInstrument spellings if one
+    broker's raw export includes a company-name suffix and another doesn't,
+    and nothing in InstrumentMaster.xlsx unifies them - caught by the user
+    asking whether another instrument had the same silent-fragmentation
+    problem as a just-fixed missing holding (real cases: Fortum/Fortum Oyj,
+    Nokia/Nokia Oyj).
+    """
+    master_path = tmp_path / "InstrumentMaster.xlsx"
+    _write_master(master_path, [
+        {"Enabled": "YES", "Broker": "NORDNET", "RawInstrumentName": "Example", "NormalizedInstrument": "EXAMPLE", "InstrumentType": "STOCK", "Currency": "EUR", "PriceSymbol": "EXAMPLE.HE"},
+        {"Enabled": "YES", "Broker": "OP", "RawInstrumentName": "Example Oyj", "NormalizedInstrument": "EXAMPLE OYJ", "InstrumentType": "STOCK", "Currency": "EUR", "PriceSymbol": "EXAMPLE.HE"},
+    ])
+    master = load_instrument_master(master_path)
+
+    dupes = find_duplicate_instrument_mappings(master)
+
+    assert dupes == {"EXAMPLE.HE": ["EXAMPLE", "EXAMPLE OYJ"]}
+
+
+def test_unique_price_symbols_not_flagged(tmp_path):
+    master_path = tmp_path / "InstrumentMaster.xlsx"
+    _write_master(master_path, [
+        {"Enabled": "YES", "NormalizedInstrument": "EXAMPLE A", "InstrumentType": "STOCK", "Currency": "EUR", "PriceSymbol": "EXA.HE"},
+        {"Enabled": "YES", "NormalizedInstrument": "EXAMPLE B", "InstrumentType": "STOCK", "Currency": "EUR", "PriceSymbol": "EXB.HE"},
+    ])
+    master = load_instrument_master(master_path)
+
+    assert find_duplicate_instrument_mappings(master) == {}
+
+
+def test_duplicate_mapping_is_reported_even_for_inactive_instrument(tmp_path):
+    """Unlike unclassified/unpriced/stale, this check scans the whole master
+    sheet - a duplicate mapping is a latent bug even before it's currently
+    held (a defunct/never-yet-active instrument could become active again
+    via a new purchase or re-imported older history)."""
+    positions_path = tmp_path / "PortfolioPositions.xlsx"
+    master_path = tmp_path / "InstrumentMaster.xlsx"
+    prices_path = tmp_path / "InstrumentPrices.xlsx"
+
+    _write_positions(positions_path, [])
+    _write_master(master_path, [
+        {"Enabled": "YES", "NormalizedInstrument": "EXAMPLE", "InstrumentType": "STOCK", "Currency": "EUR", "PriceSymbol": "EXAMPLE.HE"},
+        {"Enabled": "YES", "NormalizedInstrument": "EXAMPLE OYJ", "InstrumentType": "STOCK", "Currency": "EUR", "PriceSymbol": "EXAMPLE.HE"},
+    ])
+    _write_prices(prices_path, [])
+
+    gaps = find_coverage_gaps(positions_path, master_path, prices_path)
+
+    assert gaps["active_instrument_count"] == 0
+    assert has_gaps(gaps)
+    assert gaps["duplicate_instrument_mappings"] == {"EXAMPLE.HE": ["EXAMPLE", "EXAMPLE OYJ"]}
 
 
 def test_cli_exits_nonzero_on_gaps_without_force(tmp_path, monkeypatch, capsys):

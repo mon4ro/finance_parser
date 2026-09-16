@@ -51,6 +51,16 @@ POSITIONS_COLUMNS = [
 QUANTITY_ADD_TYPES = {
     "BUY", "ALLOCATED", "DELIVERY", "MATCHING",
     "VAIHTO AP-JÄTTÖ", "VAIHTO - JÄTTÖ",
+    # Real bug found and fixed: OP's "OSTO - HINNATON" ("purchase, priceless")
+    # is a free-share acquisition, same meaning as ALLOCATED/DELIVERY/MATCHING
+    # (no market cost, so deliberately not in CASH_FLOW_TYPES either - a
+    # DELIVERY-like grant, not a JÄTTÖ-like transfer that might later get a
+    # manually-corrected cost basis). Previously unhandled, which silently
+    # dropped an entire real holding (real ongoing dividend history since -
+    # confirmed by the user checking their own real holdings) since this was
+    # the ONLY event establishing that holding's quantity - same failure
+    # pattern as the JÄTTÖ SIIRTO bug just above, different broker/label.
+    "OSTO - HINNATON",
     # Real bug found and fixed: a real transfer-in event type, same meaning
     # as VAIHTO - JÄTTÖ (shares delivered in, no market purchase) but with
     # its own distinct raw label. Previously unhandled, which silently
