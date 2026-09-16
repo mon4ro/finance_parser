@@ -18,11 +18,15 @@ from finance_parser.investments.fetch_instrument_prices import (
 )
 
 # One-time import of the user's own manually-tracked monthly fund prices
-# (input/investments/investment_price_backfill.xlsm, gitignored - real
-# personal data, never committed). Hardcoded to this specific file's layout
-# (Investments sheet, PRICES > FUNDS block, rows 12-25, month columns from
-# row 2) rather than a generalised importer - deliberately not meant to be
-# rerun against a different file shape.
+# (input/investments/manual_backfill/investment_price_backfill.xlsm,
+# gitignored - real personal data, never committed). Lives in a subfolder,
+# not directly in input/investments/, so investment_parser.py's
+# collect_files() (non-recursive iterdir()) never tries to parse it as a
+# broker export - it did, and failed, the first time this file sat directly
+# in input/investments/, aborting the whole import batch. Hardcoded to this
+# specific file's layout (Investments sheet, PRICES > FUNDS block, rows
+# 12-25, month columns from row 2) rather than a generalised importer -
+# deliberately not meant to be rerun against a different file shape.
 #
 # Rows in the source file NOT included here:
 #   - Seligson: Global Top 25 Brands, Spiltan Aktiefond Investmentbolag:
@@ -180,7 +184,7 @@ def build_arg_parser() -> argparse.ArgumentParser:
         description="One-time import of investment_price_backfill.xlsm's manually-tracked monthly fund prices. "
                     "Fills InstrumentPrices.xlsx gaps only - never touches an existing (instrument, date) row."
     )
-    parser.add_argument("--source", default=None, help="Path to the manual backfill .xlsm. Defaults to input/investments/investment_price_backfill.xlsm.")
+    parser.add_argument("--source", default=None, help="Path to the manual backfill .xlsm. Defaults to input/investments/manual_backfill/investment_price_backfill.xlsm.")
     parser.add_argument("--prices-workbook", default=str(DEFAULT_PRICES_WORKBOOK))
     parser.add_argument("--instrument-master", default=str(DEFAULT_INSTRUMENT_MASTER))
     parser.add_argument("--dry-run", action="store_true")
@@ -191,7 +195,7 @@ def main() -> None:
     args = build_arg_parser().parse_args()
 
     project_root = Path(__file__).resolve().parents[2]
-    source_path = Path(args.source).expanduser().resolve() if args.source else project_root / "input" / "investments" / "investment_price_backfill.xlsm"
+    source_path = Path(args.source).expanduser().resolve() if args.source else project_root / "input" / "investments" / "manual_backfill" / "investment_price_backfill.xlsm"
     prices_workbook = Path(args.prices_workbook).expanduser().resolve()
     instrument_master_path = Path(args.instrument_master).expanduser().resolve()
 
