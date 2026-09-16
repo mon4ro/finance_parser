@@ -58,11 +58,14 @@ def _write_transactions(path, rows):
 OPENING_POSITIONS_HEADERS = ["Broker", "Portfolio", "NormalizedInstrument", "Date", "Quantity", "CashAmount", "Notes"]
 
 
-def _write_instrument_master(path, opening_position_rows):
+def _write_instrument_master(path, opening_position_rows, master_rows=None):
     wb = Workbook()
     ws = wb.active
     ws.title = "InstrumentMaster"
-    ws.append(["NormalizedInstrument"])
+    master_headers = ["NormalizedInstrument", "CostBasisMethod"]
+    ws.append(master_headers)
+    for row in (master_rows or []):
+        ws.append([row.get(h, "") for h in master_headers])
     opening = wb.create_sheet("OpeningPositions")
     opening.append(OPENING_POSITIONS_HEADERS)
     for row in opening_position_rows:
@@ -327,3 +330,98 @@ def test_build_positions_opening_balance_row_gets_owner_from_settings(tmp_path):
         assert list(rows["PortfolioOwner"]) == ["PERSON_A", "PERSON_A"]
     finally:
         settings_module._SETTINGS_CACHE = old_cache
+
+
+def test_average_cost_basis_reduces_proportionally_on_partial_sell(tmp_path):
+    """
+    Real case this fixes: OP-Suomi A arrived as one lot (54.2698 units,
+    3141.19 real cost, confirmed against the broker's own displayed
+    purchase price and gain%), then a partial sell of 29.2698 units for
+    11862.76 real proceeds. Under the default cash-flow model,
+    CumulativeNetInvested went positive (-3141.19 + 11862.76 = 8721.57),
+    overstating the remaining position's unrealized gain. Opted into
+    AVERAGE cost basis, the remaining cost basis must instead be reduced
+    proportionally to the fraction of units sold, landing close to the
+    broker's own remaining-cost-basis figure (25 * 57.881 = 1447.03).
+    """
+    investments_path = tmp_path / "ParsedInvestments.xlsx"
+    _write_transactions(investments_path, [
+        {"Broker": "OP", "Portfolio": "OP", "NormalizedInstrument": "OP-SUOMI A", "TransactionType": "VAIHTO - JÄTTÖ", "TradeDate": "2017-09-22", "Quantity": 54.2698, "CashAmount": -3141.19},
+        {"Broker": "OP", "Portfolio": "OP", "NormalizedInstrument": "OP-SUOMI A", "TransactionType": "SELL", "TradeDate": "2025-03-05", "Quantity": 29.2698, "CashAmount": 11862.76},
+    ])
+
+    instrument_master_path = tmp_path / "InstrumentMaster.xlsx"
+    _write_instrument_master(
+        instrument_master_path, [],
+        master_rows=[{"NormalizedInstrument": "OP-SUOMI A", "CostBasisMethod": "AVERAGE"}],
+    )
+
+    positions, stats = build_positions(investments_path, instrument_master_path)
+
+    rows = positions[positions["NormalizedInstrument"] == "OP-SUOMI A"]
+    assert list(rows["CumulativeQuantity"]) == pytest.approx([54.2698, 25.0])
+    assert rows["CumulativeNetInvested"].iloc[-1] == pytest.approx(-1447.03, abs=0.01)
+    assert stats["positive_net_invested_instruments"] == {}
+
+
+def test_average_cost_basis_not_opted_in_keeps_cash_flow_behavior(tmp_path):
+    """Same transactions as above but with no CostBasisMethod set - must
+    keep today's existing (cash-flow) behavior unchanged."""
+    investments_path = tmp_path / "ParsedInvestments.xlsx"
+    _write_transactions(investments_path, [
+        {"Broker": "OP", "Portfolio": "OP", "NormalizedInstrument": "OP-SUOMI A", "TransactionType": "VAIHTO - JÄTTÖ", "TradeDate": "2017-09-22", "Quantity": 54.2698, "CashAmount": -3141.19},
+        {"Broker": "OP", "Portfolio": "OP", "NormalizedInstrument": "OP-SUOMI A", "TransactionType": "SELL", "TradeDate": "2025-03-05", "Quantity": 29.2698, "CashAmount": 11862.76},
+    ])
+
+    positions, _ = build_positions(investments_path, _no_instrument_master(tmp_path))
+
+    rows = positions[positions["NormalizedInstrument"] == "OP-SUOMI A"]
+    assert rows["CumulativeNetInvested"].iloc[-1] == pytest.approx(8721.57, abs=0.01)
+
+
+def test_average_cost_basis_reaches_exactly_zero_after_full_sell(tmp_path):
+    """A full exit under AVERAGE cost basis must land the remaining cost
+    basis exactly at 0, not a residual positive/negative rounding value."""
+    investments_path = tmp_path / "ParsedInvestments.xlsx"
+    _write_transactions(investments_path, [
+        {"Broker": "OP", "Portfolio": "OP", "NormalizedInstrument": "OP-AMERIKKA A", "TransactionType": "BUY", "TradeDate": "2020-01-01", "Quantity": 10, "CashAmount": -500},
+        {"Broker": "OP", "Portfolio": "OP", "NormalizedInstrument": "OP-AMERIKKA A", "TransactionType": "SELL", "TradeDate": "2021-01-01", "Quantity": 10, "CashAmount": 800},
+    ])
+
+    instrument_master_path = tmp_path / "InstrumentMaster.xlsx"
+    _write_instrument_master(
+        instrument_master_path, [],
+        master_rows=[{"NormalizedInstrument": "OP-AMERIKKA A", "CostBasisMethod": "AVERAGE"}],
+    )
+
+    positions, _ = build_positions(investments_path, instrument_master_path)
+
+    rows = positions[positions["NormalizedInstrument"] == "OP-AMERIKKA A"]
+    assert rows["CumulativeNetInvested"].iloc[-1] == pytest.approx(0.0, abs=1e-9)
+
+
+def test_average_cost_basis_handles_multiple_buys_then_sell_dca_style(tmp_path):
+    """
+    Real case: OP-Maltillinen A has 63 monthly BUY rows (dollar-cost
+    averaging) then a full sell - average cost basis must correctly sum
+    every contribution and reduce it fully to 0 on the full exit, same as a
+    single-lot purchase.
+    """
+    investments_path = tmp_path / "ParsedInvestments.xlsx"
+    rows = [
+        {"Broker": "OP", "Portfolio": "OP", "NormalizedInstrument": "OP-MALTILLINEN A", "TransactionType": "BUY", "TradeDate": f"2020-0{m}-10", "Quantity": 1, "CashAmount": -50}
+        for m in range(1, 4)
+    ]
+    rows.append({"Broker": "OP", "Portfolio": "OP", "NormalizedInstrument": "OP-MALTILLINEN A", "TransactionType": "SELL", "TradeDate": "2021-01-01", "Quantity": 3, "CashAmount": 180})
+    _write_transactions(investments_path, rows)
+
+    instrument_master_path = tmp_path / "InstrumentMaster.xlsx"
+    _write_instrument_master(
+        instrument_master_path, [],
+        master_rows=[{"NormalizedInstrument": "OP-MALTILLINEN A", "CostBasisMethod": "AVERAGE"}],
+    )
+
+    positions, _ = build_positions(investments_path, instrument_master_path)
+
+    result_rows = positions[positions["NormalizedInstrument"] == "OP-MALTILLINEN A"]
+    assert result_rows["CumulativeNetInvested"].iloc[-1] == pytest.approx(0.0, abs=1e-9)

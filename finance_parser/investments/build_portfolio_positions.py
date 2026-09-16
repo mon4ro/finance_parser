@@ -180,6 +180,80 @@ def load_opening_positions(instrument_master_path: Path) -> pd.DataFrame:
     return df[_OPENING_POSITIONS_COLUMNS]
 
 
+def load_average_cost_instruments(instrument_master_path: Path) -> set[str]:
+    """
+    NormalizedInstrument names opted into average-cost-basis tracking via
+    InstrumentMaster.xlsx's own CostBasisMethod column ("AVERAGE"; blank or
+    anything else keeps the default cash-flow cumsum behavior). Deliberately
+    an explicit opt-in per instrument, not a blanket policy: correct for a
+    savings-plan-style fund (regular contributions, eventual redemption -
+    average cost is the standard method), but wrong for an actively-traded
+    stock bought and sold many times, or an incentive-plan holding with
+    partial tax-withholding sales - those need FIFO/specific-lot matching to
+    track correctly, which is a deliberately separate, deferred feature.
+    """
+    if not instrument_master_path.exists():
+        return set()
+
+    try:
+        df = pd.read_excel(instrument_master_path, sheet_name="InstrumentMaster", dtype=object, engine="openpyxl")
+    except ValueError:
+        return set()
+
+    df.columns = [normalise_header(c) for c in df.columns]
+    if "CostBasisMethod" not in df.columns:
+        return set()
+
+    is_average = df["CostBasisMethod"].map(normalise_text).str.upper() == "AVERAGE"
+    return set(df.loc[is_average, "NormalizedInstrument"].map(normalise_text).str.upper())
+
+
+def apply_average_cost_basis(active: pd.DataFrame, group_cols: list[str], average_cost_instruments: set[str]) -> pd.Series:
+    """
+    Walk each (Broker, Portfolio, NormalizedInstrument) group chronologically
+    with a running cost-basis total, so that for an opted-in instrument a
+    quantity-reducing event (a SELL, or any QUANTITY_SUBTRACT_TYPES) reduces
+    the running cost basis proportionally to the fraction of the position
+    removed, instead of adding that event's cash delta on top (the default
+    cash-flow model). This always yields a correct "remaining cost basis" /
+    "unrealized gain on what's still held" for the opted-in instrument, no
+    matter how many buy/sell cycles happen - it does not (and isn't meant
+    to) compute realized gain/loss for any specific historical sale, which
+    needs FIFO/specific-lot matching and is a deliberately separate,
+    deferred feature. A non-opted-in instrument's CashDelta passes through
+    completely unchanged. Requires `active` to already be sorted by
+    group_cols + date, and CumulativeQuantity to already be computed
+    (build_positions() guarantees both).
+    """
+    resolved = active["CashDelta"].copy()
+    running_invested = 0.0
+    previous_quantity = 0.0
+    current_group = None
+
+    for idx, row in active.iterrows():
+        group_key = tuple(row[c] for c in group_cols)
+        if group_key != current_group:
+            current_group = group_key
+            running_invested = 0.0
+            previous_quantity = 0.0
+
+        quantity_after = row["CumulativeQuantity"]
+        is_reduction = row["QuantityDelta"] < 0 and previous_quantity > 1e-9
+
+        if row["NormalizedInstrument"] in average_cost_instruments and is_reduction:
+            remaining_fraction = max(quantity_after, 0.0) / previous_quantity
+            new_invested = running_invested * remaining_fraction
+            resolved.at[idx] = new_invested - running_invested
+            running_invested = new_invested
+        else:
+            resolved.at[idx] = row["CashDelta"]
+            running_invested += row["CashDelta"]
+
+        previous_quantity = quantity_after
+
+    return resolved
+
+
 def classify_quantity_delta(row: pd.Series) -> float:
     """
     Naive per-row delta, ignoring reset semantics - used only as the
@@ -285,6 +359,9 @@ def build_positions(
     group_cols = ["Broker", "Portfolio", "NormalizedInstrument"]
     active["QuantityDelta"] = apply_quantity_resets(active, group_cols)
     active["CumulativeQuantity"] = active.groupby(group_cols)["QuantityDelta"].cumsum()
+
+    average_cost_instruments = load_average_cost_instruments(instrument_master)
+    active["CashDelta"] = apply_average_cost_basis(active, group_cols, average_cost_instruments)
     active["CumulativeNetInvested"] = active.groupby(group_cols)["CashDelta"].cumsum()
 
     active["Date"] = active["_TradeDate"].dt.strftime("%Y-%m-%d")
