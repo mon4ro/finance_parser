@@ -1,3 +1,5 @@
+import os
+import time
 from pathlib import Path
 
 from openpyxl import Workbook, load_workbook
@@ -5,6 +7,8 @@ from openpyxl import Workbook, load_workbook
 from finance_parser.utilities.fresh_workbook_writer import (
     append_changelog_row,
     apply_review_status_column,
+    find_timestamped_backups,
+    prune_backups,
     read_workbook_values_only,
     records_to_sheet_values,
     replace_with_fresh_workbook,
@@ -192,3 +196,77 @@ def test_replace_with_fresh_workbook_backs_up_and_replaces(tmp_path):
     wb2 = load_workbook(path, read_only=True)
     assert wb2["UnifiedTransactions"]["B2"].value == "New"
     wb2.close()
+
+
+def _touch_backup(path: Path, name: str, *, age_seconds: int) -> Path:
+    backup = path.parent / name
+    backup.write_text("stub")
+    now = time.time()
+    os.utime(backup, (now - age_seconds, now - age_seconds))
+    return backup
+
+
+def test_find_timestamped_backups_ignores_non_timestamped_pattern(tmp_path):
+    path = tmp_path / "book.xlsx"
+    path.write_text("stub")
+
+    timestamped = _touch_backup(path, "book_backup_unit_20260101_120000.xlsx", age_seconds=0)
+    # The separate, non-accumulating pattern used by write_investment_output_workbook()
+    # / common.py's budgeting write path - always overwritten in place, never a
+    # pruning candidate.
+    _touch_backup(path, "book_backup_before_last_run.xlsx", age_seconds=0)
+
+    found = find_timestamped_backups(path)
+
+    assert found == [timestamped]
+
+
+def test_prune_backups_keeps_only_the_newest_n(tmp_path):
+    path = tmp_path / "book.xlsx"
+    path.write_text("stub")
+
+    # Oldest to newest.
+    old_to_new = [
+        _touch_backup(path, f"book_backup_unit_2026010{i}_120000.xlsx", age_seconds=(10 - i))
+        for i in range(1, 8)
+    ]
+
+    removed = prune_backups(path, keep=5)
+
+    assert set(removed) == set(old_to_new[:2])
+    remaining = {p.name for p in find_timestamped_backups(path)}
+    assert remaining == {p.name for p in old_to_new[2:]}
+
+
+def test_replace_with_fresh_workbook_prunes_old_backups_automatically(tmp_path):
+    path = tmp_path / "book.xlsx"
+    wb = Workbook()
+    wb.active.title = "UnifiedTransactions"
+    wb.active.append(["UnifiedID"])
+    wb.save(path)
+    wb.close()
+
+    sheets = {"UnifiedTransactions": [["UnifiedID"], ["U1"]]}
+
+    for i in range(7):
+        replace_with_fresh_workbook(path, sheets, backup_label=f"run{i}", backup_retention=5)
+
+    remaining = find_timestamped_backups(path)
+    assert len(remaining) == 5
+
+
+def test_replace_with_fresh_workbook_backup_retention_zero_disables_pruning(tmp_path):
+    path = tmp_path / "book.xlsx"
+    wb = Workbook()
+    wb.active.title = "UnifiedTransactions"
+    wb.active.append(["UnifiedID"])
+    wb.save(path)
+    wb.close()
+
+    sheets = {"UnifiedTransactions": [["UnifiedID"], ["U1"]]}
+
+    for i in range(7):
+        replace_with_fresh_workbook(path, sheets, backup_label=f"run{i}", backup_retention=0)
+
+    remaining = find_timestamped_backups(path)
+    assert len(remaining) == 7

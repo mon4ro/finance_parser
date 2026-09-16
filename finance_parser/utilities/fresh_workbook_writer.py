@@ -417,6 +417,64 @@ def timestamped_backup_path(path: Path, *, label: str) -> Path:
     return path.with_name(f"{path.stem}_backup_{label}_{stamp}{path.suffix}")
 
 
+DEFAULT_BACKUP_RETENTION = 5
+
+# Matches exactly what timestamped_backup_path() produces:
+# <stem>_backup_<label>_<YYYYMMDD_HHMMSS><suffix>. Deliberately does NOT match
+# the separate, non-accumulating "<stem>_backup_before_last_run<suffix>"
+# pattern used by write_investment_output_workbook()/common.py's budgeting
+# output write path (see CLAUDE.md/write path) - that one is always
+# overwritten in place, never accumulates, and needs no pruning.
+_TIMESTAMPED_BACKUP_RE = re.compile(r"^(?P<stem>.+)_backup_.+_(?P<stamp>\d{8}_\d{6})(?P<suffix>\.[^.]+)$")
+
+
+def is_timestamped_backup(path: Path) -> bool:
+    """Whether path matches the pattern timestamped_backup_path() produces."""
+    return bool(_TIMESTAMPED_BACKUP_RE.match(path.name))
+
+
+def recover_base_path_from_backup(backup_path: Path) -> Path | None:
+    """
+    Given a timestamped backup file, return the original workbook path it's a
+    backup of, or None if backup_path doesn't match the timestamped-backup
+    naming pattern. Used to group backups by base file when sweeping a whole
+    directory tree (clean_backups.py), where the base path isn't already known
+    the way it is when pruning right after a single write.
+    """
+    match = _TIMESTAMPED_BACKUP_RE.match(backup_path.name)
+    if not match:
+        return None
+    return backup_path.with_name(match.group("stem") + match.group("suffix"))
+
+
+def find_timestamped_backups(workbook_path: Path) -> list[Path]:
+    """
+    All timestamped backups on disk for workbook_path, in the same directory,
+    newest first (by filesystem mtime - the timestamp embedded in the
+    filename is for humans, not what pruning sorts by).
+    """
+    if not workbook_path.parent.exists():
+        return []
+
+    candidates = workbook_path.parent.glob(f"{workbook_path.stem}_backup_*{workbook_path.suffix}")
+    matches = [p for p in candidates if _TIMESTAMPED_BACKUP_RE.match(p.name)]
+    return sorted(matches, key=lambda p: p.stat().st_mtime, reverse=True)
+
+
+def prune_backups(workbook_path: Path, *, keep: int = DEFAULT_BACKUP_RETENTION) -> list[Path]:
+    """
+    Delete all but the `keep` most recent timestamped backups of
+    workbook_path. Returns the paths that were removed.
+    """
+    backups = find_timestamped_backups(workbook_path)
+    to_remove = backups[keep:]
+
+    for path in to_remove:
+        path.unlink()
+
+    return to_remove
+
+
 def replace_with_fresh_workbook(
     workbook_path: Path,
     sheets: dict[str, list[list[object]]],
@@ -424,9 +482,16 @@ def replace_with_fresh_workbook(
     backup_label: str,
     basic_formatting: bool = True,
     excel_tables: bool = True,
+    backup_retention: int = DEFAULT_BACKUP_RETENTION,
 ) -> tuple[Path, Path, dict[str, int]]:
     """
     Write a fresh workbook package, validate it, backup old workbook, replace.
+
+    Also prunes older timestamped backups of this same file down to
+    `backup_retention` (default 5) right after creating the new one - this
+    project's backup files live under an iCloud-synced directory, so
+    unbounded accumulation is both local disk and iCloud sync bloat, not just
+    clutter. Pass backup_retention=0 to disable pruning for a single call.
 
     Returns (backup_path, new_temp_path, stats). The returned new_temp_path no
     longer exists after successful replacement; it is returned for logging/tests.
@@ -446,5 +511,8 @@ def replace_with_fresh_workbook(
     backup_path = timestamped_backup_path(workbook_path, label=backup_label)
     shutil.move(str(workbook_path), str(backup_path))
     new_path.replace(workbook_path)
+
+    if backup_retention > 0:
+        prune_backups(workbook_path, keep=backup_retention)
 
     return backup_path, new_path, stats
