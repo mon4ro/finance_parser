@@ -253,6 +253,16 @@ def fetch_all(
                 f"{instrument}: InstrumentMaster says {expected_currency}, Yahoo says {fetched_currency}"
             )
 
+        # Prefer InstrumentMaster's human-verified Currency over Yahoo's own
+        # chart-meta currency when both are set. Real case that forced this:
+        # BGF World Technology's working ticker (0P00000AWU) returns Yahoo
+        # meta currency "USD", but its raw values match real EUR NAV history
+        # almost exactly (cross-checked against manually-tracked EUR prices
+        # at multiple dates, no FX-scaling factor needed) - Yahoo's own
+        # currency tag is simply wrong here, not the price data. Falls back
+        # to the fetched currency only when InstrumentMaster has none set.
+        currency = expected_currency or fetched_currency
+
         fetched_at = imported_at_now()
         for day, close in price_rows:
             new_rows.append({
@@ -261,7 +271,7 @@ def fetch_all(
                 "PriceSymbol": symbol,
                 "Date": day.isoformat(),
                 "Close": close,
-                "Currency": fetched_currency or expected_currency,
+                "Currency": currency,
                 "PriceSource": source,
                 "FetchedAt": fetched_at,
             })

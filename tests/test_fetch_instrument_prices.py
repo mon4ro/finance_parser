@@ -134,6 +134,39 @@ def test_fetch_all_incremental_skips_already_covered_dates(tmp_path):
     assert combined.iloc[0]["Date"] == today
 
 
+def test_fetch_all_prefers_instrument_master_currency_over_fetched_currency(tmp_path, monkeypatch):
+    """
+    Real bug: a working ticker's Yahoo chart-meta currency can simply be
+    wrong (BGF World Technology's ticker 0P00000AWU reports "USD" in its
+    meta, but its raw values match real EUR NAV history almost exactly - no
+    FX-scaling factor needed at multiple cross-checked dates). Instrument
+    Master's human-verified Currency must win when both are set.
+    """
+    master_path = tmp_path / "InstrumentMaster.xlsx"
+    transactions_path = tmp_path / "ParsedInvestments.xlsx"
+    prices_path = tmp_path / "InstrumentPrices.xlsx"
+
+    _write_instrument_master(master_path, [
+        {"Enabled": "YES", "NormalizedInstrument": "BGF WORLD TECHNOLOGY", "PriceSource": "YAHOO", "PriceSymbol": "0P00000AWU", "Currency": "EUR"},
+    ])
+    _write_transactions(transactions_path, [
+        {"NormalizedInstrument": "BGF WORLD TECHNOLOGY", "TradeDate": "2022-01-01"},
+    ])
+
+    def fake_fetch(symbol, start, end):
+        return [(date(2026, 1, 5), 100.0)], "USD"
+
+    monkeypatch.setattr(
+        "finance_parser.investments.fetch_instrument_prices.fetch_yahoo_daily_closes",
+        fake_fetch,
+    )
+
+    combined, stats = fetch_all(master_path, transactions_path, prices_path, verbose=False)
+
+    assert combined.iloc[0]["Currency"] == "EUR"
+    assert "BGF WORLD TECHNOLOGY: InstrumentMaster says EUR, Yahoo says USD" in stats["currency_mismatches"]
+
+
 @pytest.mark.parametrize("symbol", ["SAMPO.HE"])
 def test_fetch_yahoo_daily_closes_real_network_call(symbol):
     """
