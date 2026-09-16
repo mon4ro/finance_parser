@@ -42,20 +42,34 @@ DIVIDEND_EVENT_COLUMNS = ["Broker", "Portfolio", "NormalizedInstrument", "TradeD
 CASH_TRACKED_BROKERS = {"NORDNET", "EVLI"}
 CASH_INSTRUMENT_LABEL = "CASH"
 
-# Real bug found and fixed: EVLI's Sell/Sell of purchased share proceeds do
-# NOT stay inside EVLI as cash - they're wired straight to the linked bank
-# account at settlement. Confirmed against real data on the budgeting side:
-# two real EVLI withdrawals ("Withdrawal from EAM account (ESSP)") landed in
-# the bank within days of a sale, each within a few percent of that sale's
-# total proceeds (one matched to the exact cent minus a flat fee). Including
-# these in the EVLI cash cumsum made the reconstructed balance grow forever
-# with no corresponding outflow ever recorded (EVLI's own "Cash transferred"
-# event type is unrelated - a much smaller, separate administrative
-# cleanup), producing an impossible/ever-growing "cash held" figure the user
-# caught immediately as unrealistic. Excluding these two types entirely (as
-# if they never touched EVLI's own float) is correct precisely because the
-# money never did.
-EVLI_SELL_PROCEEDS_TYPES = {"SELL", "SELL OF PURCHASED SHARE"}
+# Real bugs found and fixed - two distinct EVLI TransactionTypeRaw values
+# that never actually become real, spendable cash inside EVLI, even though
+# their CashAmount is a genuine non-zero number:
+#
+# - Sell / Sell of purchased share: proceeds are wired straight to the
+#   linked bank account at settlement, never held as EVLI cash. Confirmed
+#   against real data on the budgeting side: two real EVLI withdrawals
+#   ("Withdrawal from EAM account (ESSP)") landed in the bank within days of
+#   a sale, each within a few percent of that sale's total proceeds (one
+#   matched to the exact cent minus a flat fee).
+# - Allocated: an employer-funded plan-cycle bonus that converts directly
+#   into free "Matching" shares (which sit right next to it with CashAmount
+#   0), not a deposit that ever lands in a liquid balance. Confirmed across
+#   FOUR independent real plan cycles (2020/2021/2022/2023): each cycle's
+#   Savings/Share-purchase pairs net to exactly 0.00, leaving only that
+#   cycle's one-time Allocated amount (175/200/200/200) as a permanent
+#   residual - never spent, never withdrawn, never swept into a purchase.
+#
+# Including either in the EVLI cash cumsum made the reconstructed balance
+# grow forever with no corresponding outflow ever recorded (EVLI's own
+# "Cash transferred" event type is unrelated - a much smaller, separate
+# administrative cleanup of already-accumulated dividend float - see
+# build_cash_balance_rows()'s docstring). The user caught the resulting
+# figure as impossible against their own real, independently-tracked
+# balance both times. Excluding these types entirely (as if they never
+# touched EVLI's own float) is correct precisely because the money never
+# did.
+EVLI_NON_CASH_EVENT_TYPES = {"SELL", "SELL OF PURCHASED SHARE", "ALLOCATED"}
 
 BASE_CURRENCY = "EUR"
 QUANTITY_EPSILON = 1e-6
@@ -212,9 +226,10 @@ def build_cash_balance_rows(cash_source: pd.DataFrame, last_month_end: pd.Timest
     - EVLI's export never populates CashBalance (confirmed against real
       data: 0 of ~130 real rows have it) - reconstruct it as a chronological
       cumsum of every CashAmount the account has ever seen EXCEPT
-      EVLI_SELL_PROCEEDS_TYPES (deposits, dividends, purchases, withdrawals -
-      everything but sell proceeds, which are paid straight to the bank and
-      never actually sit in EVLI as cash - see that constant's docstring).
+      EVLI_NON_CASH_EVENT_TYPES (deposits, dividends, purchases, real
+      withdrawals - everything but sell proceeds and the Allocated bonus,
+      neither of which ever actually becomes spendable EVLI cash - see that
+      constant's docstring for the real-data evidence).
 
     A month with zero cash balance is still a real, meaningful data point
     (fully withdrawn/reinvested) and is kept, not dropped - only a month
@@ -240,7 +255,7 @@ def build_cash_balance_rows(cash_source: pd.DataFrame, last_month_end: pd.Timest
             )
         else:
             group = group.copy()
-            counted_cash = group["CashAmount"].where(~group["TransactionTypeRaw"].isin(EVLI_SELL_PROCEEDS_TYPES), 0.0)
+            counted_cash = group["CashAmount"].where(~group["TransactionTypeRaw"].isin(EVLI_NON_CASH_EVENT_TYPES), 0.0)
             group["Balance"] = counted_cash.cumsum()
             balance_source = group[["TradeDate", "Balance"]]
 

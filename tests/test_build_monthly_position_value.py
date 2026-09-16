@@ -552,6 +552,36 @@ def test_cash_balance_rows_evli_excludes_sell_proceeds(tmp_path):
     assert by_month["2021-02-28"]["MarketValueEUR"] == 200.0
 
 
+def test_cash_balance_rows_evli_excludes_allocated_bonus(tmp_path):
+    """
+    Real bug: EVLI's Allocated plan-cycle bonus never becomes real,
+    spendable cash - it converts directly into free Matching shares.
+    Confirmed across four independent real plan cycles: each cycle's
+    Savings/Share-purchase pairs net to exactly 0, leaving only the
+    Allocated amount as a permanent, never-spent residual - a clear sign
+    it was never real liquid cash to begin with.
+    """
+    source = pd.DataFrame([
+        {"Broker": "EVLI", "Portfolio": "EVLI", "TradeDate": pd.Timestamp("2021-01-01"), "CashAmount": 200.0, "CashBalance": None, "TransactionTypeRaw": "ALLOCATED"},
+        {"Broker": "EVLI", "Portfolio": "EVLI", "TradeDate": pd.Timestamp("2021-01-10"), "CashAmount": 175.0, "CashBalance": None, "TransactionTypeRaw": "SAVINGS"},
+        {"Broker": "EVLI", "Portfolio": "EVLI", "TradeDate": pd.Timestamp("2021-02-10"), "CashAmount": 175.0, "CashBalance": None, "TransactionTypeRaw": "SAVINGS"},
+        {"Broker": "EVLI", "Portfolio": "EVLI", "TradeDate": pd.Timestamp("2021-02-20"), "CashAmount": -350.0, "CashBalance": None, "TransactionTypeRaw": "SHARE PURCHASE"},
+    ])
+
+    loaded = _with_cash_settings(tmp_path)
+    old_cache = settings_module._SETTINGS_CACHE
+    try:
+        settings_module._SETTINGS_CACHE = loaded
+        rows = build_cash_balance_rows(source, pd.Timestamp("2021-02-28"))
+    finally:
+        settings_module._SETTINGS_CACHE = old_cache
+
+    by_month = {r["MonthEnd"]: r for r in rows}
+    # The Allocated 200 is excluded entirely - only Savings/Share purchase
+    # net (175 + 175 - 350 = 0), not 200 + 175 + 175 - 350 = 200.
+    assert by_month["2021-02-28"]["MarketValueEUR"] == 0.0
+
+
 def test_cash_balance_rows_zero_balance_kept_not_dropped(tmp_path):
     source = pd.DataFrame([
         {"Broker": "EVLI", "Portfolio": "EVLI", "TradeDate": pd.Timestamp("2021-01-10"), "CashAmount": 100.0, "CashBalance": None, "TransactionTypeRaw": "SAVINGS"},
