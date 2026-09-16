@@ -15,6 +15,10 @@ POSITIONS_HEADERS = [
 ]
 PRICES_HEADERS = ["NormalizedInstrument", "ISIN", "PriceSymbol", "Date", "Close", "Currency", "PriceSource", "FetchedAt"]
 FX_HEADERS = ["Currency", "Date", "Rate", "Source", "FetchedAt"]
+TRANSACTIONS_HEADERS = [
+    "Broker", "Portfolio", "PortfolioOwner", "PortfolioType", "NormalizedInstrument",
+    "TransactionType", "TradeDate", "CashAmount",
+]
 
 
 def _write_sheet(path, sheet_name, headers, rows):
@@ -37,6 +41,10 @@ def _prices(path, rows):
 
 def _fx(path, rows):
     _write_sheet(path, "FXRates", FX_HEADERS, rows)
+
+
+def _transactions(path, rows):
+    _write_sheet(path, "InvestmentTransactions", TRANSACTIONS_HEADERS, rows)
 
 
 def test_last_completed_month_end():
@@ -235,3 +243,88 @@ def test_missing_fx_rate_is_reported_and_row_skipped(tmp_path):
 
     assert len(result) == 0
     assert stats["missing_fx_currency_months"] == [("NOK", "2021-01")]
+
+
+def test_dividend_appears_in_its_own_month_and_carries_into_the_cumulative_total(tmp_path):
+    positions_path = tmp_path / "PortfolioPositions.xlsx"
+    prices_path = tmp_path / "InstrumentPrices.xlsx"
+    fx_path = tmp_path / "FXRates.xlsx"
+    investments_path = tmp_path / "ParsedInvestments.xlsx"
+
+    _positions(positions_path, [
+        {"Broker": "OP", "Portfolio": "OP", "NormalizedInstrument": "TELIA COMPANY AB", "Date": "2021-01-05", "CumulativeQuantity": 100, "CumulativeNetInvested": -1000},
+    ])
+    _prices(prices_path, [
+        {"NormalizedInstrument": "TELIA COMPANY AB", "Date": "2021-01-31", "Close": 10.0, "Currency": "EUR"},
+        {"NormalizedInstrument": "TELIA COMPANY AB", "Date": "2021-02-28", "Close": 10.0, "Currency": "EUR"},
+        {"NormalizedInstrument": "TELIA COMPANY AB", "Date": "2021-03-31", "Close": 10.0, "Currency": "EUR"},
+    ])
+    _fx(fx_path, [])
+    _transactions(investments_path, [
+        {"Broker": "OP", "Portfolio": "OP", "NormalizedInstrument": "TELIA COMPANY AB", "TransactionType": "DIVIDEND", "TradeDate": "2021-02-15", "CashAmount": 100.0},
+        {"Broker": "OP", "Portfolio": "OP", "NormalizedInstrument": "TELIA COMPANY AB", "TransactionType": "TAX", "TradeDate": "2021-02-15", "CashAmount": -15.0},
+    ])
+
+    result, stats = build_monthly_values(positions_path, prices_path, fx_path, investments_path, as_of=date(2021, 4, 5))
+    by_month = result.set_index("MonthEnd")
+
+    assert by_month.loc["2021-01-31", "DividendGrossEUR"] == 0.0
+    assert by_month.loc["2021-01-31", "CumulativeDividendGrossEUR"] == 0.0
+
+    assert by_month.loc["2021-02-28", "DividendGrossEUR"] == 100.0
+    assert by_month.loc["2021-02-28", "DividendTaxEUR"] == 15.0
+    assert by_month.loc["2021-02-28", "DividendNetEUR"] == 85.0
+    assert by_month.loc["2021-02-28", "CumulativeDividendGrossEUR"] == 100.0
+    assert by_month.loc["2021-02-28", "CumulativeDividendNetEUR"] == 85.0
+
+    # March had no dividend of its own, but the cumulative total carries forward.
+    assert by_month.loc["2021-03-31", "DividendGrossEUR"] == 0.0
+    assert by_month.loc["2021-03-31", "CumulativeDividendGrossEUR"] == 100.0
+    assert by_month.loc["2021-03-31", "CumulativeDividendNetEUR"] == 85.0
+
+
+def test_dividend_for_a_different_instrument_does_not_leak_across_groups(tmp_path):
+    positions_path = tmp_path / "PortfolioPositions.xlsx"
+    prices_path = tmp_path / "InstrumentPrices.xlsx"
+    fx_path = tmp_path / "FXRates.xlsx"
+    investments_path = tmp_path / "ParsedInvestments.xlsx"
+
+    _positions(positions_path, [
+        {"Broker": "OP", "Portfolio": "OP", "NormalizedInstrument": "TELIA COMPANY AB", "Date": "2021-01-05", "CumulativeQuantity": 100, "CumulativeNetInvested": -1000},
+        {"Broker": "OP", "Portfolio": "OP", "NormalizedInstrument": "FORTUM", "Date": "2021-01-05", "CumulativeQuantity": 50, "CumulativeNetInvested": -500},
+    ])
+    _prices(prices_path, [
+        {"NormalizedInstrument": "TELIA COMPANY AB", "Date": "2021-01-31", "Close": 10.0, "Currency": "EUR"},
+        {"NormalizedInstrument": "FORTUM", "Date": "2021-01-31", "Close": 10.0, "Currency": "EUR"},
+    ])
+    _fx(fx_path, [])
+    _transactions(investments_path, [
+        {"Broker": "OP", "Portfolio": "OP", "NormalizedInstrument": "FORTUM", "TransactionType": "DIVIDEND", "TradeDate": "2021-01-15", "CashAmount": 114.0},
+    ])
+
+    result, stats = build_monthly_values(positions_path, prices_path, fx_path, investments_path, as_of=date(2021, 2, 5))
+    by_instrument = result.set_index("NormalizedInstrument")
+
+    assert by_instrument.loc["FORTUM", "DividendGrossEUR"] == 114.0
+    assert by_instrument.loc["TELIA COMPANY AB", "DividendGrossEUR"] == 0.0
+
+
+def test_no_investments_workbook_defaults_dividend_columns_to_zero(tmp_path):
+    """Backward compatible: an omitted/missing investments_workbook must not
+    error, just report zero dividend activity everywhere."""
+    positions_path = tmp_path / "PortfolioPositions.xlsx"
+    prices_path = tmp_path / "InstrumentPrices.xlsx"
+    fx_path = tmp_path / "FXRates.xlsx"
+
+    _positions(positions_path, [
+        {"Broker": "NORDNET", "Portfolio": "1", "NormalizedInstrument": "SAMPO A", "Date": "2021-01-15", "CumulativeQuantity": 100, "CumulativeNetInvested": -1000},
+    ])
+    _prices(prices_path, [
+        {"NormalizedInstrument": "SAMPO A", "Date": "2021-01-31", "Close": 10.0, "Currency": "EUR"},
+    ])
+    _fx(fx_path, [])
+
+    result, stats = build_monthly_values(positions_path, prices_path, fx_path, as_of=date(2021, 2, 5))
+
+    assert result.iloc[0]["DividendGrossEUR"] == 0.0
+    assert result.iloc[0]["CumulativeDividendNetEUR"] == 0.0

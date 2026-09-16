@@ -53,7 +53,7 @@ python -m finance_parser.budgeting.transaction_categoriser --dry-run
 ## Investment workflow
 
 Run the full investment pipeline (parse, fetch prices, fetch FX rates, build positions,
-check coverage, build the monthly value rollup):
+build dividend history, check coverage, build the monthly value rollup):
 
 ```bash
 python run_investment_pipeline.py
@@ -79,6 +79,7 @@ python -m finance_parser.investments.investment_parser
 python -m finance_parser.investments.fetch_instrument_prices
 python -m finance_parser.investments.fetch_fx_rates
 python -m finance_parser.investments.build_portfolio_positions
+python -m finance_parser.investments.build_dividend_history
 python -m finance_parser.investments.check_instrument_coverage
 python -m finance_parser.investments.build_monthly_position_value
 ```

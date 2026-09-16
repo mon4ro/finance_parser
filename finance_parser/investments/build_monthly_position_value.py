@@ -7,6 +7,7 @@ from pathlib import Path
 import pandas as pd
 
 from finance_parser.common import normalise_header, normalise_text
+from finance_parser.investments.build_dividend_history import load_dividend_events
 from finance_parser.utilities.fresh_workbook_writer import (
     read_workbook_values_only,
     records_to_sheet_values,
@@ -18,6 +19,7 @@ PROJECT_ROOT = Path(__file__).resolve().parents[2]
 DEFAULT_POSITIONS_WORKBOOK = PROJECT_ROOT / "output" / "investments" / "PortfolioPositions.xlsx"
 DEFAULT_PRICES_WORKBOOK = PROJECT_ROOT / "output" / "investments" / "InstrumentPrices.xlsx"
 DEFAULT_FX_RATES_WORKBOOK = PROJECT_ROOT / "output" / "investments" / "FXRates.xlsx"
+DEFAULT_INVESTMENTS_WORKBOOK = PROJECT_ROOT / "output" / "investments" / "ParsedInvestments.xlsx"
 DEFAULT_OUTPUT_WORKBOOK = PROJECT_ROOT / "output" / "investments" / "MonthlyPositionValue.xlsx"
 
 MONTHLY_VALUE_SHEET = "MonthlyPositionValue"
@@ -26,7 +28,11 @@ MONTHLY_VALUE_COLUMNS = [
     "NormalizedInstrument", "CumulativeQuantity", "PriceLocal", "InstrumentCurrency",
     "PriceDate", "FXRate", "FXDate", "MarketValueEUR",
     "CumulativeNetInvested", "UnrealizedGainEUR",
+    "DividendGrossEUR", "DividendTaxEUR", "DividendNetEUR",
+    "CumulativeDividendGrossEUR", "CumulativeDividendNetEUR",
 ]
+
+DIVIDEND_EVENT_COLUMNS = ["Broker", "Portfolio", "NormalizedInstrument", "TradeDate", "GrossDividendEUR", "TaxWithheldEUR", "NetDividendEUR"]
 
 BASE_CURRENCY = "EUR"
 QUANTITY_EPSILON = 1e-6
@@ -87,16 +93,61 @@ def month_end_dates(first_event_date: pd.Timestamp, last_month_end: pd.Timestamp
     return pd.date_range(start=first_event_date, end=last_month_end, freq="ME")
 
 
+def _monthly_dividend_table(group_events: pd.DataFrame, months: pd.DatetimeIndex) -> pd.DataFrame:
+    """
+    For one (Broker, Portfolio, NormalizedInstrument) group's dividend
+    events, return one row per candidate month with that month's gross/tax/
+    net dividend sum and the running cumulative gross/net total up to and
+    including that month - a lifetime running total for the group, not
+    reset by a full sell-then-later-rebuy (same convention as
+    CumulativeNetInvested).
+    """
+    result = pd.DataFrame({"MonthEnd": months})
+
+    if len(group_events) == 0:
+        result["DividendGrossEUR"] = 0.0
+        result["DividendTaxEUR"] = 0.0
+        result["DividendNetEUR"] = 0.0
+        result["CumulativeDividendGrossEUR"] = 0.0
+        result["CumulativeDividendNetEUR"] = 0.0
+        return result
+
+    events = group_events.copy()
+    events["_MonthPeriod"] = events["TradeDate"].dt.to_period("M")
+    monthly = events.groupby("_MonthPeriod")[["GrossDividendEUR", "TaxWithheldEUR", "NetDividendEUR"]].sum()
+    monthly = monthly.rename(columns={
+        "GrossDividendEUR": "DividendGrossEUR",
+        "TaxWithheldEUR": "DividendTaxEUR",
+        "NetDividendEUR": "DividendNetEUR",
+    })
+
+    result["_MonthPeriod"] = result["MonthEnd"].dt.to_period("M")
+    result = result.merge(monthly, how="left", left_on="_MonthPeriod", right_index=True)
+    result = result.drop(columns=["_MonthPeriod"])
+    for col in ["DividendGrossEUR", "DividendTaxEUR", "DividendNetEUR"]:
+        result[col] = result[col].fillna(0.0)
+
+    result["CumulativeDividendGrossEUR"] = result["DividendGrossEUR"].cumsum()
+    result["CumulativeDividendNetEUR"] = result["DividendNetEUR"].cumsum()
+
+    return result
+
+
 def build_monthly_values(
     positions_workbook: Path,
     prices_workbook: Path,
     fx_rates_workbook: Path,
+    investments_workbook: Path | None = None,
     *,
     as_of: date | None = None,
 ) -> tuple[pd.DataFrame, dict[str, object]]:
     positions = load_portfolio_positions(positions_workbook)
     prices = load_instrument_prices(prices_workbook)
     fx_rates = load_fx_rates(fx_rates_workbook)
+    if investments_workbook is not None and investments_workbook.exists():
+        dividend_events = load_dividend_events(investments_workbook)
+    else:
+        dividend_events = pd.DataFrame(columns=DIVIDEND_EVENT_COLUMNS)
 
     last_month_end = last_completed_month_end(as_of or date.today())
 
@@ -111,6 +162,13 @@ def build_monthly_values(
         months = month_end_dates(group["Date"].iloc[0], last_month_end)
         if len(months) == 0:
             continue
+
+        group_dividends = dividend_events[
+            (dividend_events["Broker"] == broker)
+            & (dividend_events["Portfolio"] == portfolio)
+            & (dividend_events["NormalizedInstrument"] == instrument)
+        ]
+        dividend_by_month = _monthly_dividend_table(group_dividends, months)
 
         candidates = pd.DataFrame({"MonthEnd": months})
         as_of_position = pd.merge_asof(
@@ -133,6 +191,7 @@ def build_monthly_values(
             direction="backward",
             suffixes=("", "_price"),
         )
+        with_price = with_price.merge(dividend_by_month, on="MonthEnd", how="left")
 
         for _, r in with_price.iterrows():
             month_end = r["MonthEnd"]
@@ -192,6 +251,11 @@ def build_monthly_values(
                 # exactly to the two stored columns, not off by a cent from
                 # rounding market_value_eur/net_invested independently.
                 "UnrealizedGainEUR": round(market_value_eur + net_invested, 2),
+                "DividendGrossEUR": round(float(r["DividendGrossEUR"]), 2),
+                "DividendTaxEUR": round(float(r["DividendTaxEUR"]), 2),
+                "DividendNetEUR": round(float(r["DividendNetEUR"]), 2),
+                "CumulativeDividendGrossEUR": round(float(r["CumulativeDividendGrossEUR"]), 2),
+                "CumulativeDividendNetEUR": round(float(r["CumulativeDividendNetEUR"]), 2),
             })
 
     result = pd.DataFrame(rows, columns=MONTHLY_VALUE_COLUMNS)
@@ -234,6 +298,7 @@ def build_arg_parser() -> argparse.ArgumentParser:
     parser.add_argument("--positions-workbook", default=str(DEFAULT_POSITIONS_WORKBOOK))
     parser.add_argument("--prices-workbook", default=str(DEFAULT_PRICES_WORKBOOK))
     parser.add_argument("--fx-rates-workbook", default=str(DEFAULT_FX_RATES_WORKBOOK))
+    parser.add_argument("--investments-workbook", default=str(DEFAULT_INVESTMENTS_WORKBOOK), help="Source of dividend/tax events.")
     parser.add_argument("--output-workbook", default=str(DEFAULT_OUTPUT_WORKBOOK))
     parser.add_argument("--dry-run", action="store_true")
     return parser
@@ -255,9 +320,10 @@ def main() -> None:
     positions_workbook = Path(args.positions_workbook).expanduser().resolve()
     prices_workbook = Path(args.prices_workbook).expanduser().resolve()
     fx_rates_workbook = Path(args.fx_rates_workbook).expanduser().resolve()
+    investments_workbook = Path(args.investments_workbook).expanduser().resolve()
     output_workbook = Path(args.output_workbook).expanduser().resolve()
 
-    monthly_values, stats = build_monthly_values(positions_workbook, prices_workbook, fx_rates_workbook)
+    monthly_values, stats = build_monthly_values(positions_workbook, prices_workbook, fx_rates_workbook, investments_workbook)
 
     print("Monthly position value rebuild complete." if not args.dry_run else "Dry run complete.")
     print(f"Last completed month-end used: {stats['last_month_end']}")

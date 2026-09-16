@@ -23,15 +23,16 @@ DEFAULT_PRICES_WORKBOOK = INVESTMENT_OUTPUT_DIR / "InstrumentPrices.xlsx"
 DEFAULT_FX_RATES_WORKBOOK = INVESTMENT_OUTPUT_DIR / "FXRates.xlsx"
 DEFAULT_POSITIONS_WORKBOOK = INVESTMENT_OUTPUT_DIR / "PortfolioPositions.xlsx"
 DEFAULT_MONTHLY_VALUE_WORKBOOK = INVESTMENT_OUTPUT_DIR / "MonthlyPositionValue.xlsx"
+DEFAULT_DIVIDEND_HISTORY_WORKBOOK = INVESTMENT_OUTPUT_DIR / "DividendHistory.xlsx"
 
 DEFAULT_STALE_DAYS = 7
 
-# Five pipeline-owned output files, each written by exactly one stage. These
+# Six pipeline-owned output files, each written by exactly one stage. These
 # get dry-run temp-copied. input/investments/ and InstrumentMaster.xlsx are
 # read-only inputs to every stage (never written by the pipeline itself) and
 # are never copied - same distinction the budgeting orchestrator already
 # makes between --workbook (copied) and --rules (not copied).
-WORKBOOK_KEYS = ["investments", "prices", "fx_rates", "positions", "monthly_value"]
+WORKBOOK_KEYS = ["investments", "prices", "fx_rates", "positions", "monthly_value", "dividend_history"]
 
 
 @dataclass(frozen=True)
@@ -58,6 +59,7 @@ def build_arg_parser() -> argparse.ArgumentParser:
     parser.add_argument("--fx-rates-workbook", default=str(DEFAULT_FX_RATES_WORKBOOK))
     parser.add_argument("--positions-workbook", default=str(DEFAULT_POSITIONS_WORKBOOK))
     parser.add_argument("--monthly-value-workbook", default=str(DEFAULT_MONTHLY_VALUE_WORKBOOK))
+    parser.add_argument("--dividend-history-workbook", default=str(DEFAULT_DIVIDEND_HISTORY_WORKBOOK))
     parser.add_argument(
         "--dry-run",
         action="store_true",
@@ -166,11 +168,18 @@ def build_pipeline_commands(
     if force:
         coverage_cmd.append("--force")
 
+    dividend_history_cmd = [
+        python_executable, "-m", "finance_parser.investments.build_dividend_history",
+        "--investments-workbook", str(workbooks["investments"]),
+        "--output-workbook", str(workbooks["dividend_history"]),
+    ]
+
     rollup_cmd = [
         python_executable, "-m", "finance_parser.investments.build_monthly_position_value",
         "--positions-workbook", str(workbooks["positions"]),
         "--prices-workbook", str(workbooks["prices"]),
         "--fx-rates-workbook", str(workbooks["fx_rates"]),
+        "--investments-workbook", str(workbooks["investments"]),
         "--output-workbook", str(workbooks["monthly_value"]),
     ]
 
@@ -180,6 +189,7 @@ def build_pipeline_commands(
     if not skip_fx:
         commands.append(PipelineCommand("FX rate fetch", fx_cmd))
     commands.append(PipelineCommand("portfolio positions", positions_cmd))
+    commands.append(PipelineCommand("dividend history", dividend_history_cmd))
     commands.append(PipelineCommand("instrument coverage check", coverage_cmd, is_gate=True))
     commands.append(PipelineCommand("monthly position value rollup", rollup_cmd))
     return commands
@@ -214,6 +224,7 @@ def run_pipeline(args: argparse.Namespace) -> int:
         "fx_rates": Path(args.fx_rates_workbook).expanduser().resolve(),
         "positions": Path(args.positions_workbook).expanduser().resolve(),
         "monthly_value": Path(args.monthly_value_workbook).expanduser().resolve(),
+        "dividend_history": Path(args.dividend_history_workbook).expanduser().resolve(),
     }
 
     INVESTMENT_INPUT_DIR.mkdir(parents=True, exist_ok=True)
