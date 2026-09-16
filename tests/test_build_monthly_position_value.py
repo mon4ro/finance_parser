@@ -64,7 +64,10 @@ def test_eur_instrument_market_value_and_gain(tmp_path):
     assert row["Year"] == 2021
     assert row["Month"] == 3
     assert row["MarketValueEUR"] == 1200.0
-    assert row["UnrealizedGainEUR"] == 2200.0
+    # Real bug caught by the user against real data: this used to assert
+    # 2200.0 (market value MINUS a negative net_invested, i.e. added
+    # together) instead of the real gain (value minus amount actually paid).
+    assert row["UnrealizedGainEUR"] == 200.0
     assert row["FXRate"] == 1.0
 
 

@@ -23,8 +23,8 @@ DEFAULT_OUTPUT_WORKBOOK = PROJECT_ROOT / "output" / "investments" / "MonthlyPosi
 MONTHLY_VALUE_SHEET = "MonthlyPositionValue"
 MONTHLY_VALUE_COLUMNS = [
     "MonthEnd", "Year", "Month", "Broker", "Portfolio", "PortfolioOwner",
-    "NormalizedInstrument", "CumulativeQuantity", "PriceLocal", "PriceDate",
-    "InstrumentCurrency", "FXRate", "FXDate", "MarketValueEUR",
+    "NormalizedInstrument", "CumulativeQuantity", "PriceLocal", "InstrumentCurrency",
+    "PriceDate", "FXRate", "FXDate", "MarketValueEUR",
     "CumulativeNetInvested", "UnrealizedGainEUR",
 ]
 
@@ -163,8 +163,8 @@ def build_monthly_values(
 
             quantity = float(r["CumulativeQuantity"])
             price_local = float(r["Close"])
-            market_value_eur = quantity * price_local * fx_rate
-            net_invested = float(r["CumulativeNetInvested"])
+            market_value_eur = round(quantity * price_local * fx_rate, 2)
+            net_invested = round(float(r["CumulativeNetInvested"]), 2)
 
             rows.append({
                 "MonthEnd": month_end.strftime("%Y-%m-%d"),
@@ -176,13 +176,22 @@ def build_monthly_values(
                 "NormalizedInstrument": instrument,
                 "CumulativeQuantity": quantity,
                 "PriceLocal": price_local,
-                "PriceDate": r["Date_price"].strftime("%Y-%m-%d") if "Date_price" in r and pd.notna(r["Date_price"]) else r["Date"].strftime("%Y-%m-%d"),
                 "InstrumentCurrency": currency,
+                "PriceDate": r["Date_price"].strftime("%Y-%m-%d") if "Date_price" in r and pd.notna(r["Date_price"]) else r["Date"].strftime("%Y-%m-%d"),
                 "FXRate": fx_rate,
                 "FXDate": fx_date.strftime("%Y-%m-%d") if pd.notna(fx_date) else "",
-                "MarketValueEUR": round(market_value_eur, 2),
-                "CumulativeNetInvested": round(net_invested, 2),
-                "UnrealizedGainEUR": round(market_value_eur - net_invested, 2),
+                "MarketValueEUR": market_value_eur,
+                "CumulativeNetInvested": net_invested,
+                # net_invested is a cash-flow figure (negative = money paid
+                # out to buy), not a positive cost basis - so gain is value
+                # PLUS net_invested, not minus. Confirmed real bug: this used
+                # to be `market_value_eur - net_invested`, which for a
+                # negative net_invested added the two together instead of
+                # subtracting, roughly doubling every gain figure. Both
+                # inputs are already rounded above so this always sums
+                # exactly to the two stored columns, not off by a cent from
+                # rounding market_value_eur/net_invested independently.
+                "UnrealizedGainEUR": round(market_value_eur + net_invested, 2),
             })
 
     result = pd.DataFrame(rows, columns=MONTHLY_VALUE_COLUMNS)
