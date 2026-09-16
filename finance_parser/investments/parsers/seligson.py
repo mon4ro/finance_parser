@@ -116,7 +116,17 @@ def can_parse(path: Path) -> tuple[bool, str]:
         return False, str(exc)
 
 
-def make_investment_raw_id(row: pd.Series) -> str:
+def make_investment_raw_id(row: pd.Series, *, cash_amount_for_id: object = None) -> str:
+    # cash_amount_for_id lets a caller hash the RAW (pre-sign-flip) Summa
+    # value instead of row["CashAmount"] (which now holds the flipped,
+    # investor-perspective value) - see _investor_cash_amount(). This keeps
+    # the ID formula byte-identical to what it always hashed, so already-
+    # imported rows' IDs stay stable across the sign-flip fix. Real bug this
+    # replaced: hashing the corrected CashAmount directly changed every
+    # existing row's ID the moment the sign convention was fixed, so a
+    # reparse of the same source file duplicated all 77 real Seligson rows
+    # instead of recognizing them as already imported.
+    cash_value = row.get("CashAmount", "") if cash_amount_for_id is None else cash_amount_for_id
     return "SEL-" + stable_hash([
         BROKER,
         row.get("Portfolio", ""),
@@ -125,7 +135,7 @@ def make_investment_raw_id(row: pd.Series) -> str:
         row.get("InstrumentName", ""),
         row.get("Quantity", ""),
         row.get("UnitPrice", ""),
-        row.get("CashAmount", ""),
+        cash_value,
     ], length=16)
 
 
@@ -163,13 +173,30 @@ def _instrument_name_from_template(portfolio: str) -> str:
         return f"SELIGSON {portfolio}".strip()
 
 
-def _infer_transaction_type_raw(cash_amount: float) -> str:
+def _infer_transaction_type_raw(raw_cash_amount: float) -> str:
     # In the manually parsed Seligson syntax, positive Summa (€) rows from the
     # provided file represent subscriptions/purchases. Negative rows are treated
     # as redemptions. Adjust later if Seligson rows with other meanings appear.
-    if cash_amount < 0:
+    # This classification uses the RAW (pre-sign-flip) Summa value - see
+    # _investor_cash_amount() below for why the stored CashAmount itself is
+    # negated relative to this.
+    if raw_cash_amount < 0:
         return "LUNASTUS"
     return "MERKINTÄ"
+
+
+def _investor_cash_amount(raw_cash_amount: float) -> float:
+    """
+    Seligson's own "Summa (€)" column is signed from the FUND's perspective
+    (positive = subscription money coming IN to the fund). This project's
+    CashAmount convention is the INVESTOR's cash flow (negative = money paid
+    out to buy), matching every other broker - flip the sign so a
+    subscription becomes negative and a redemption becomes positive. Real
+    bug this replaced: every Seligson BUY was stored with a positive
+    CashAmount, making CumulativeNetInvested read as money received instead
+    of money paid, for every real Seligson purchase.
+    """
+    return -float(raw_cash_amount)
 
 
 def _optional_amount(row: pd.Series, column: str | None, default: object = "") -> object:
@@ -205,7 +232,8 @@ def parse_file(path: Path, imported_at: str) -> pd.DataFrame:
     rows: list[dict[str, object]] = []
 
     for _, row in df.iterrows():
-        cash_amount = normalise_amount(row.get(cash_amount_col, 0))
+        raw_cash_amount = normalise_amount(row.get(cash_amount_col, 0))
+        cash_amount = _investor_cash_amount(raw_cash_amount)
         portfolio = normalise_text(row.get(portfolio_col, "")) if portfolio_col else "SELIGSON"
 
         # If the manually parsed file has no explicit fund/instrument name,
@@ -228,7 +256,7 @@ def parse_file(path: Path, imported_at: str) -> pd.DataFrame:
             "BookingDate": format_date(row.get(value_date_col, "")),
             "TradeDate": format_date(row.get(value_date_col, "")),
             "SettlementDate": format_date(row.get(value_date_col, "")),
-            "TransactionTypeRaw": _infer_transaction_type_raw(cash_amount),
+            "TransactionTypeRaw": _infer_transaction_type_raw(raw_cash_amount),
             "InstrumentName": instrument_name,
             "ISIN": "",
             "Quantity": _optional_amount(row, quantity_col, 0),
@@ -259,7 +287,7 @@ def parse_file(path: Path, imported_at: str) -> pd.DataFrame:
             "SeligsonTransactionNumber": transaction_number,
         }
 
-        parsed_row["InvestmentRawID"] = make_investment_raw_id(pd.Series(parsed_row))
+        parsed_row["InvestmentRawID"] = make_investment_raw_id(pd.Series(parsed_row), cash_amount_for_id=raw_cash_amount)
         rows.append({column: parsed_row.get(column, "") for column in INVESTMENT_RAW_COLUMNS})
 
     return pd.DataFrame(rows, columns=INVESTMENT_RAW_COLUMNS)
