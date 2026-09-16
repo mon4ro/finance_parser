@@ -102,14 +102,36 @@ def _optional_amount(row: pd.Series, column: str | None, default: object = "") -
     return normalise_amount(value)
 
 
-def _cash_amount(row: pd.Series, amount_col: str | None, amount_local_col: str | None) -> float:
-    """
-    Prefer `amountLocal` if present, otherwise `amount`.
+# Real bug found and fixed: every real "Sell"/"Sell of purchased share" row
+# has blank amount/amountLocal, and this export's "Cash transferred" rows
+# (which a previous version of this function assumed covered the proceeds)
+# turned out to be a later, unrelated WITHDRAWAL to the bank account, not
+# the sale's cash counterparty at all - so every real EVLI sell was silently
+# recorded with CashAmount=0, dropping real money received entirely.
+_SELL_EVENT_TYPES = {"SELL", "SELL OF PURCHASED SHARE"}
 
-    Sell rows in the observed export may have blank amount fields and only a
-    Value/unit-price field. In that case we leave cash amount as 0 instead of
-    inventing proceeds from Quantity × Value, because the export also contains
-    separate cash transfer rows and may omit fees/taxes.
+
+def _cash_amount(
+    row: pd.Series,
+    amount_col: str | None,
+    amount_local_col: str | None,
+    *,
+    event_type: str = "",
+    quantity: object = "",
+    unit_price: object = "",
+) -> float:
+    """
+    Prefer `amountLocal` if present, otherwise `amount`. For a real sale
+    with neither, estimate proceeds from quantity x the per-share Value at
+    time of sale instead of silently reporting 0 - an approximation (may
+    not reflect fees/taxes deducted at settlement), but far closer than 0.
+
+    Deliberately NOT extended to Delivery/Matching/Allocated (the buy side)
+    even though some of those also have blank amount with a Value present:
+    real data shows those look like employer-matched or otherwise free
+    shares, not a market purchase - estimating a cost for them would be
+    actively wrong, not just an approximation, so they stay at 0 (unknown
+    cost basis) rather than guessed.
     """
     local = _optional_amount(row, amount_local_col, "")
     if local != "":
@@ -118,6 +140,9 @@ def _cash_amount(row: pd.Series, amount_col: str | None, amount_local_col: str |
     amount = _optional_amount(row, amount_col, "")
     if amount != "":
         return float(amount)
+
+    if normalise_text(event_type).upper() in _SELL_EVENT_TYPES and quantity != "" and unit_price != "":
+        return round(-float(quantity) * float(unit_price), 2)
 
     return 0.0
 
@@ -143,11 +168,19 @@ def _plan_cycle_from_export_instrument(value: object) -> str:
     return normalise_text(value)
 
 
-def make_investment_raw_id(row: pd.Series) -> str:
+def make_investment_raw_id(row: pd.Series, *, cash_amount_for_id: object = None) -> str:
     # Portfolio is now a constant ("EVLI"), so PlanCycle is what distinguishes
     # otherwise-identical rows from different plan cycles - it must be in the
     # hash, not Portfolio, or two coincidentally-identical rows from
     # different cycles would collide onto the same ID.
+    #
+    # cash_amount_for_id lets a caller hash the OLD (pre sell-proceeds-fix)
+    # CashAmount value instead of row["CashAmount"] - see _cash_amount()'s
+    # real-sale-proceeds estimate. Same reasoning and same real bug class as
+    # Seligson's sign-convention fix: hashing the corrected value directly
+    # would change every existing sell row's ID the moment the estimate was
+    # added, duplicating all 9 real EVLI sells on the next reparse.
+    cash_value = row.get("CashAmount", "") if cash_amount_for_id is None else cash_amount_for_id
     return "EVL-" + stable_hash([
         BROKER,
         row.get("PlanCycle", ""),
@@ -155,7 +188,7 @@ def make_investment_raw_id(row: pd.Series) -> str:
         row.get("TransactionTypeRaw", ""),
         row.get("Quantity", ""),
         row.get("UnitPrice", ""),
-        row.get("CashAmount", ""),
+        cash_value,
         row.get("Status", ""),
     ], length=16)
 
@@ -206,7 +239,10 @@ def parse_file(path: Path, imported_at: str) -> pd.DataFrame:
 
         quantity = _optional_amount(row, quantity_col, 0)
         unit_price = _optional_amount(row, value_col, 0)
-        cash_amount = _cash_amount(row, amount_col, amount_local_col)
+        # Pre-fix value (no sell-proceeds estimate) - used only for ID
+        # hashing below, so already-imported rows' IDs stay stable.
+        cash_amount_for_id = _cash_amount(row, amount_col, amount_local_col)
+        cash_amount = _cash_amount(row, amount_col, amount_local_col, event_type=event_type, quantity=quantity, unit_price=unit_price)
 
         parsed_row = {
             "Broker": BROKER,
@@ -249,7 +285,7 @@ def parse_file(path: Path, imported_at: str) -> pd.DataFrame:
             "ValueDate": format_date(row.get(date_col, "")),
         }
 
-        parsed_row["InvestmentRawID"] = make_investment_raw_id(pd.Series(parsed_row))
+        parsed_row["InvestmentRawID"] = make_investment_raw_id(pd.Series(parsed_row), cash_amount_for_id=cash_amount_for_id)
         rows.append({column: parsed_row.get(column, "") for column in INVESTMENT_RAW_COLUMNS})
 
     return pd.DataFrame(rows, columns=INVESTMENT_RAW_COLUMNS)

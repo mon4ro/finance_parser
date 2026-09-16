@@ -105,6 +105,69 @@ def test_evli_fixture_parses_nokia_dividend():
     assert row["CashAmount"] == 17.88
 
 
+def test_evli_sell_with_blank_amount_estimates_proceeds_from_quantity_times_value(tmp_path):
+    """
+    Real bug this replaced: every real EVLI "Sell"/"Sell of purchased share"
+    row has blank amount/amountLocal - a previous version of this parser
+    assumed a separate "Cash transferred" row covered the proceeds, but that
+    turned out to be an unrelated later WITHDRAWAL to the bank, not the
+    sale's cash counterparty - so every real EVLI sell was silently recorded
+    with CashAmount=0. Numbers here are invented, not the real ones.
+    """
+    path = tmp_path / "evli_sell.xlsx"
+    df = pd.DataFrame([{
+        "Instrument": "Plan Cycle 2022", "Event type": "Sell of purchased share",
+        "Quantity": -100, "bonusPercent": "", "amount": "", "amountLocal": "",
+        "Value": "5.0", "Date": "1.6.2026", "Status": "Filled",
+    }])
+    df.to_excel(path, index=False)
+
+    result = evli.parse_file(path, "2026-06-04 12:00:00")
+    row = result.iloc[0]
+
+    assert row["TransactionTypeRaw"] == "Sell of purchased share"
+    assert row["CashAmount"] == 500.0
+
+
+def test_evli_matching_delivery_with_blank_amount_stays_zero_not_estimated(tmp_path):
+    """The buy side (Delivery/Matching/Allocated) is deliberately NOT
+    estimated even with a Value present - real data shows these look like
+    employer-matched or otherwise free shares, and guessing a cost for them
+    would be actively wrong, not just an approximation."""
+    path = tmp_path / "evli_delivery.xlsx"
+    df = pd.DataFrame([{
+        "Instrument": "Plan Cycle 2023", "Event type": "Delivery",
+        "Quantity": 100, "bonusPercent": "", "amount": "", "amountLocal": "",
+        "Value": "5.0", "Date": "1.6.2026", "Status": "Filled",
+    }])
+    df.to_excel(path, index=False)
+
+    result = evli.parse_file(path, "2026-06-04 12:00:00")
+    row = result.iloc[0]
+
+    assert row["CashAmount"] == 0.0
+
+
+def test_evli_raw_id_is_hashed_from_pre_estimate_cash_amount_not_stored_value():
+    """
+    Real bug this replaced: hashing the estimated (stored) CashAmount
+    instead of the pre-fix value meant adding the sell-proceeds estimate
+    changed every existing sell row's InvestmentRawID, so a reparse of an
+    already-imported file would have duplicated all 9 real EVLI sells.
+    """
+    row = pd.Series({
+        "PlanCycle": "Plan Cycle 2022", "ValueDate": "2026-06-01", "TransactionTypeRaw": "Sell of purchased share",
+        "Quantity": -100, "UnitPrice": 5.0, "Status": "Filled",
+        "CashAmount": 500.0,  # the estimated, stored value
+    })
+
+    id_via_override = evli.make_investment_raw_id(row, cash_amount_for_id=0.0)
+    id_via_default = evli.make_investment_raw_id(row)  # uses row["CashAmount"] = 500.0
+
+    assert id_via_override != id_via_default
+    assert id_via_override == evli.make_investment_raw_id(row, cash_amount_for_id=0.0)
+
+
 def test_evli_raw_id_distinguishes_rows_by_plan_cycle_not_portfolio():
     """
     Real bug this replaced: Portfolio is now a constant ("EVLI"), so it can
