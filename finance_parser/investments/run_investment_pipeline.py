@@ -7,6 +7,7 @@ import sys
 from dataclasses import dataclass
 from datetime import datetime
 from pathlib import Path
+from time import perf_counter
 
 
 PROJECT_ROOT = Path(__file__).resolve().parents[2]
@@ -170,9 +171,10 @@ def build_pipeline_commands(
     ]
 
 
-def run_command(command: PipelineCommand) -> None:
+def run_command(command: PipelineCommand) -> float:
     print()
     print(f"==> Running {command.name}")
+    start = perf_counter()
     try:
         subprocess.run(command.argv, check=True)
     except subprocess.CalledProcessError:
@@ -184,6 +186,9 @@ def run_command(command: PipelineCommand) -> None:
                 "--force to proceed with incomplete net worth data anyway."
             )
         raise
+    elapsed = perf_counter() - start
+    print(f"    ({command.name} done in {elapsed:.1f}s)")
+    return elapsed
 
 
 def run_pipeline(args: argparse.Namespace) -> int:
@@ -227,15 +232,23 @@ def run_pipeline(args: argparse.Namespace) -> int:
         stale_days=args.stale_days,
     )
 
+    stage_timings: list[tuple[str, float]] = []
     try:
         for command in commands:
-            run_command(command)
+            elapsed = run_command(command)
+            stage_timings.append((command.name, elapsed))
     except Exception:
         if args.dry_run and temp_dir is not None:
             print()
             print("Dry-run failed. Temporary files were kept for inspection:")
             print(temp_dir)
         raise
+
+    print()
+    print("Stage timing:")
+    for name, elapsed in stage_timings:
+        print(f"  {name:<32} {elapsed:6.1f}s")
+    print(f"  {'total':<32} {sum(elapsed for _, elapsed in stage_timings):6.1f}s")
 
     print()
     if args.dry_run:

@@ -1,6 +1,30 @@
 from pathlib import Path
 
+import pytest
+
 from finance_parser.investments import run_investment_pipeline as pipeline
+
+
+def test_run_command_returns_elapsed_seconds_and_prints_timing(capsys, monkeypatch):
+    monkeypatch.setattr(pipeline.subprocess, "run", lambda argv, check: None)
+
+    elapsed = pipeline.run_command(pipeline.PipelineCommand("dummy stage", ["true"]))
+
+    assert isinstance(elapsed, float)
+    assert elapsed >= 0
+    assert "dummy stage done in" in capsys.readouterr().out
+
+
+def test_run_command_propagates_failure_without_swallowing_it(monkeypatch):
+    import subprocess as subprocess_module
+
+    def raise_error(argv, check):
+        raise subprocess_module.CalledProcessError(1, argv)
+
+    monkeypatch.setattr(pipeline.subprocess, "run", raise_error)
+
+    with pytest.raises(subprocess_module.CalledProcessError):
+        pipeline.run_command(pipeline.PipelineCommand("dummy stage", ["false"]))
 
 
 def test_pipeline_cli_has_dry_run_keep_temp_and_force():
