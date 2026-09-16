@@ -24,6 +24,10 @@ DEFAULT_FX_RATES_WORKBOOK = INVESTMENT_OUTPUT_DIR / "FXRates.xlsx"
 DEFAULT_POSITIONS_WORKBOOK = INVESTMENT_OUTPUT_DIR / "PortfolioPositions.xlsx"
 DEFAULT_MONTHLY_VALUE_WORKBOOK = INVESTMENT_OUTPUT_DIR / "MonthlyPositionValue.xlsx"
 DEFAULT_DIVIDEND_HISTORY_WORKBOOK = INVESTMENT_OUTPUT_DIR / "DividendHistory.xlsx"
+# Read-only cross-pipeline input, not part of this pipeline's own
+# dry-run-copied workbooks - see build_dividend_history.py's
+# --budgeting-workbook (best-effort local-currency dividend enrichment).
+DEFAULT_BUDGETING_WORKBOOK = PROJECT_ROOT / "output" / "budgeting" / "ParsedTransactions.xlsx"
 
 DEFAULT_STALE_DAYS = 7
 
@@ -60,6 +64,17 @@ def build_arg_parser() -> argparse.ArgumentParser:
     parser.add_argument("--positions-workbook", default=str(DEFAULT_POSITIONS_WORKBOOK))
     parser.add_argument("--monthly-value-workbook", default=str(DEFAULT_MONTHLY_VALUE_WORKBOOK))
     parser.add_argument("--dividend-history-workbook", default=str(DEFAULT_DIVIDEND_HISTORY_WORKBOOK))
+    parser.add_argument(
+        "--budgeting-workbook",
+        default=str(DEFAULT_BUDGETING_WORKBOOK),
+        help="Read-only: source of local-currency dividend detail (e.g. Telia's SEK amount). "
+             "Best-effort - missing file or non-matching rows just leave those columns blank.",
+    )
+    parser.add_argument(
+        "--no-local-currency",
+        action="store_true",
+        help="Skip the local-currency dividend enrichment entirely.",
+    )
     parser.add_argument(
         "--dry-run",
         action="store_true",
@@ -130,6 +145,8 @@ def build_pipeline_commands(
     stale_days: int,
     skip_pricing: bool = False,
     skip_fx: bool = False,
+    budgeting_workbook: Path | None = None,
+    no_local_currency: bool = False,
 ) -> list[PipelineCommand]:
     parse_cmd = [
         python_executable, "-m", "finance_parser.investments.investment_parser",
@@ -173,6 +190,10 @@ def build_pipeline_commands(
         "--investments-workbook", str(workbooks["investments"]),
         "--output-workbook", str(workbooks["dividend_history"]),
     ]
+    if no_local_currency:
+        dividend_history_cmd.append("--no-local-currency")
+    elif budgeting_workbook is not None:
+        dividend_history_cmd.extend(["--budgeting-workbook", str(budgeting_workbook)])
 
     rollup_cmd = [
         python_executable, "-m", "finance_parser.investments.build_monthly_position_value",
@@ -264,6 +285,8 @@ def run_pipeline(args: argparse.Namespace) -> int:
         stale_days=args.stale_days,
         skip_pricing=args.skip_pricing,
         skip_fx=args.skip_fx,
+        budgeting_workbook=Path(args.budgeting_workbook).expanduser().resolve(),
+        no_local_currency=args.no_local_currency,
     )
 
     stage_timings: list[tuple[str, float]] = []

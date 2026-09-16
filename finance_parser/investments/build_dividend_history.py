@@ -6,6 +6,10 @@ from pathlib import Path
 import pandas as pd
 
 from finance_parser.common import normalise_header, normalise_text
+from finance_parser.investments.enrich_dividend_local_currency import (
+    enrich_dividend_history,
+    load_op_dividend_local_currency_details,
+)
 from finance_parser.utilities.fresh_workbook_writer import (
     records_to_sheet_values,
     replace_with_fresh_workbook,
@@ -15,12 +19,14 @@ from finance_parser.utilities.fresh_workbook_writer import (
 PROJECT_ROOT = Path(__file__).resolve().parents[2]
 DEFAULT_INVESTMENTS_WORKBOOK = PROJECT_ROOT / "output" / "investments" / "ParsedInvestments.xlsx"
 DEFAULT_OUTPUT_WORKBOOK = PROJECT_ROOT / "output" / "investments" / "DividendHistory.xlsx"
+DEFAULT_BUDGETING_WORKBOOK = PROJECT_ROOT / "output" / "budgeting" / "ParsedTransactions.xlsx"
 
 DIVIDEND_HISTORY_SHEET = "DividendHistory"
 DIVIDEND_HISTORY_COLUMNS = [
     "TradeDate", "Year", "Month", "Broker", "Portfolio", "PortfolioOwner",
     "PortfolioType", "NormalizedInstrument", "GrossDividendEUR",
     "TaxWithheldEUR", "NetDividendEUR",
+    "LocalCurrency", "GrossDividendLocal", "TaxWithheldLocal", "ExchangeRate",
 ]
 
 # TAX (OP) and ENNAKKOPIDÄTYS (Nordnet) are the two real TransactionType
@@ -78,11 +84,14 @@ def load_dividend_events(investments_workbook: Path) -> pd.DataFrame:
     return grouped.sort_values(group_cols).reset_index(drop=True)
 
 
-def build_dividend_history(investments_workbook: Path) -> tuple[pd.DataFrame, dict[str, object]]:
+def build_dividend_history(
+    investments_workbook: Path,
+    budgeting_workbook: Path | None = None,
+) -> tuple[pd.DataFrame, dict[str, object]]:
     events = load_dividend_events(investments_workbook)
 
     if len(events) == 0:
-        result = pd.DataFrame(columns=DIVIDEND_HISTORY_COLUMNS)
+        result = pd.DataFrame(columns=[c for c in DIVIDEND_HISTORY_COLUMNS if c not in ("LocalCurrency", "GrossDividendLocal", "TaxWithheldLocal", "ExchangeRate")])
     else:
         result = pd.DataFrame({
             "TradeDate": events["TradeDate"].dt.strftime("%Y-%m-%d"),
@@ -98,11 +107,24 @@ def build_dividend_history(investments_workbook: Path) -> tuple[pd.DataFrame, di
             "NetDividendEUR": events["NetDividendEUR"].round(2),
         })
 
+    # Best-effort enrichment, not a hard dependency: only Telia has ever
+    # needed this (the only real non-EUR-native dividend payer found in the
+    # whole portfolio), and a missing/absent budgeting workbook just means
+    # the four local-currency columns stay blank - never an error.
+    local_currency_matched = 0
+    if budgeting_workbook is not None and len(result) > 0:
+        local_details = load_op_dividend_local_currency_details(budgeting_workbook)
+        result, local_currency_matched = enrich_dividend_history(result, local_details)
+    else:
+        for col in ["LocalCurrency", "GrossDividendLocal", "TaxWithheldLocal", "ExchangeRate"]:
+            result[col] = ""
+
     stats = {
         "events": len(result),
         "total_gross_eur": round(float(result["GrossDividendEUR"].sum()), 2) if len(result) else 0.0,
         "total_tax_eur": round(float(result["TaxWithheldEUR"].sum()), 2) if len(result) else 0.0,
         "total_net_eur": round(float(result["NetDividendEUR"].sum()), 2) if len(result) else 0.0,
+        "local_currency_events_matched": local_currency_matched,
     }
 
     return result[DIVIDEND_HISTORY_COLUMNS], stats
@@ -133,6 +155,17 @@ def build_arg_parser() -> argparse.ArgumentParser:
     )
     parser.add_argument("--investments-workbook", default=str(DEFAULT_INVESTMENTS_WORKBOOK))
     parser.add_argument("--output-workbook", default=str(DEFAULT_OUTPUT_WORKBOOK))
+    parser.add_argument(
+        "--budgeting-workbook",
+        default=str(DEFAULT_BUDGETING_WORKBOOK),
+        help="Optional: source of local-currency dividend detail (e.g. Telia's SEK amount/exchange rate) "
+             "from OP's own dividend notices. Best-effort - missing or non-matching rows are left blank.",
+    )
+    parser.add_argument(
+        "--no-local-currency",
+        action="store_true",
+        help="Skip the local-currency enrichment entirely, even if --budgeting-workbook exists.",
+    )
     parser.add_argument("--dry-run", action="store_true")
     return parser
 
@@ -141,14 +174,16 @@ def main() -> None:
     args = build_arg_parser().parse_args()
     investments_workbook = Path(args.investments_workbook).expanduser().resolve()
     output_workbook = Path(args.output_workbook).expanduser().resolve()
+    budgeting_workbook = None if args.no_local_currency else Path(args.budgeting_workbook).expanduser().resolve()
 
-    dividend_history, stats = build_dividend_history(investments_workbook)
+    dividend_history, stats = build_dividend_history(investments_workbook, budgeting_workbook)
 
     print("Dividend history rebuild complete." if not args.dry_run else "Dry run complete.")
     print(f"Dividend events:       {stats['events']}")
     print(f"Total gross dividends: {stats['total_gross_eur']}")
     print(f"Total tax withheld:    {stats['total_tax_eur']}")
     print(f"Total net dividends:   {stats['total_net_eur']}")
+    print(f"Local-currency detail matched: {stats['local_currency_events_matched']}")
 
     if args.dry_run:
         print()

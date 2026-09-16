@@ -86,7 +86,9 @@ python -m finance_parser.investments.build_monthly_position_value
 
 Each script has its own `--help`; use `--force` on the pipeline (or on
 `check_instrument_coverage` directly) to proceed past incomplete coverage instead of
-halting.
+halting. Dividend history also does a best-effort, read-only enrichment from the
+budgeting side's own OP dividend notices (local-currency amount/exchange rate, e.g.
+Telia's SEK dividends) - use `--no-local-currency` to skip it.
 
 ## Tests
 

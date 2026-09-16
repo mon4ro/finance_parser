@@ -39,15 +39,15 @@ def test_corrects_only_the_matched_row(tmp_path):
     path = tmp_path / "ParsedInvestments.xlsx"
     _write_workbook(path)
 
-    stats = correct_cash_amount(path, "T-1", -3141.19)
+    stats = correct_cash_amount(path, "T-1", -500.0)
 
     assert stats["old_cash_amount"] == 0
-    assert stats["new_cash_amount"] == -3141.19
+    assert stats["new_cash_amount"] == -500.0
     assert stats["rows_matched"] == 1
 
     transactions = read_sheet(path, INVESTMENT_TRANSACTIONS_SHEET, INVESTMENT_TRANSACTIONS_COLUMNS)
     by_id = transactions.set_index("InvestmentTransactionID")
-    assert by_id.loc["T-1", "CashAmount"] == -3141.19
+    assert by_id.loc["T-1", "CashAmount"] == -500.0
     # The unrelated row must be completely untouched.
     assert by_id.loc["T-2", "CashAmount"] == -100
 
@@ -56,7 +56,7 @@ def test_raw_sheet_is_never_modified(tmp_path):
     path = tmp_path / "ParsedInvestments.xlsx"
     _write_workbook(path)
 
-    correct_cash_amount(path, "T-1", -3141.19)
+    correct_cash_amount(path, "T-1", -500.0)
 
     raw = read_sheet(path, INVESTMENT_RAW_SHEET, INVESTMENT_RAW_COLUMNS)
     assert raw.iloc[0]["InvestmentRawID"] == "RAW-1"
@@ -74,8 +74,8 @@ def test_dry_run_does_not_modify_the_workbook(tmp_path):
     path = tmp_path / "ParsedInvestments.xlsx"
     _write_workbook(path)
 
-    stats = correct_cash_amount(path, "T-1", -3141.19, dry_run=True)
-    assert stats["new_cash_amount"] == -3141.19
+    stats = correct_cash_amount(path, "T-1", -500.0, dry_run=True)
+    assert stats["new_cash_amount"] == -500.0
 
     transactions = read_sheet(path, INVESTMENT_TRANSACTIONS_SHEET, INVESTMENT_TRANSACTIONS_COLUMNS)
     assert transactions.set_index("InvestmentTransactionID").loc["T-1", "CashAmount"] == 0

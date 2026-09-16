@@ -299,13 +299,13 @@ def test_dividend_for_a_different_instrument_does_not_leak_across_groups(tmp_pat
     ])
     _fx(fx_path, [])
     _transactions(investments_path, [
-        {"Broker": "OP", "Portfolio": "OP", "NormalizedInstrument": "FORTUM", "TransactionType": "DIVIDEND", "TradeDate": "2021-01-15", "CashAmount": 114.0},
+        {"Broker": "OP", "Portfolio": "OP", "NormalizedInstrument": "FORTUM", "TransactionType": "DIVIDEND", "TradeDate": "2021-01-15", "CashAmount": 120.0},
     ])
 
     result, stats = build_monthly_values(positions_path, prices_path, fx_path, investments_path, as_of=date(2021, 2, 5))
     by_instrument = result.set_index("NormalizedInstrument")
 
-    assert by_instrument.loc["FORTUM", "DividendGrossEUR"] == 114.0
+    assert by_instrument.loc["FORTUM", "DividendGrossEUR"] == 120.0
     assert by_instrument.loc["TELIA COMPANY AB", "DividendGrossEUR"] == 0.0
 
 

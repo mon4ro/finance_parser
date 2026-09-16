@@ -162,23 +162,24 @@ def test_build_positions_excludes_known_neutral_types_from_unhandled_report(tmp_
 
 def test_build_positions_flags_positive_net_invested_as_warning_not_silent(tmp_path):
     """
-    Real case: OP-Suomi A arrived via a VAIHTO - JÄTTÖ transfer with no
-    recorded cost (CashAmount=0 - the real cost is unknown, not zero), then
-    a later SELL added real proceeds on top of that unknown zero, making
+    Real case (numbers here invented, not the real ones): OP-Suomi A
+    arrived via a VAIHTO - JÄTTÖ transfer with no recorded cost
+    (CashAmount=0 - the real cost is unknown, not zero), then a later SELL
+    added real proceeds on top of that unknown zero, making
     CumulativeNetInvested go positive - implying a "gain" from investing
     nothing. Must be flagged, not silently reported as if it were correct.
     """
     path = tmp_path / "ParsedInvestments.xlsx"
     _write_transactions(path, [
-        {"Broker": "OP", "Portfolio": "OP", "NormalizedInstrument": "OP-SUOMI A", "TransactionType": "VAIHTO - JÄTTÖ", "TradeDate": "2017-09-22", "Quantity": 54.2698, "CashAmount": 0},
-        {"Broker": "OP", "Portfolio": "OP", "NormalizedInstrument": "OP-SUOMI A", "TransactionType": "SELL", "TradeDate": "2025-03-05", "Quantity": 29.2698, "CashAmount": 11862.76},
+        {"Broker": "OP", "Portfolio": "OP", "NormalizedInstrument": "OP-SUOMI A", "TransactionType": "VAIHTO - JÄTTÖ", "TradeDate": "2017-09-22", "Quantity": 100, "CashAmount": 0},
+        {"Broker": "OP", "Portfolio": "OP", "NormalizedInstrument": "OP-SUOMI A", "TransactionType": "SELL", "TradeDate": "2025-03-05", "Quantity": 60, "CashAmount": 3000},
     ])
 
     positions, stats = build_positions(path, _no_instrument_master(tmp_path))
 
     rows = positions[positions["NormalizedInstrument"] == "OP-SUOMI A"]
-    assert list(rows["CumulativeNetInvested"]) == [0.0, 11862.76]
-    assert stats["positive_net_invested_instruments"] == {("OP", "OP", "OP-SUOMI A"): 11862.76}
+    assert list(rows["CumulativeNetInvested"]) == [0.0, 3000.0]
+    assert stats["positive_net_invested_instruments"] == {("OP", "OP", "OP-SUOMI A"): 3000.0}
 
 
 def test_build_positions_excludes_blank_normalized_instrument_rows(tmp_path):
@@ -334,20 +335,18 @@ def test_build_positions_opening_balance_row_gets_owner_from_settings(tmp_path):
 
 def test_average_cost_basis_reduces_proportionally_on_partial_sell(tmp_path):
     """
-    Real case this fixes: OP-Suomi A arrived as one lot (54.2698 units,
-    3141.19 real cost, confirmed against the broker's own displayed
-    purchase price and gain%), then a partial sell of 29.2698 units for
-    11862.76 real proceeds. Under the default cash-flow model,
-    CumulativeNetInvested went positive (-3141.19 + 11862.76 = 8721.57),
-    overstating the remaining position's unrealized gain. Opted into
-    AVERAGE cost basis, the remaining cost basis must instead be reduced
-    proportionally to the fraction of units sold, landing close to the
-    broker's own remaining-cost-basis figure (25 * 57.881 = 1447.03).
+    Real case this fixes (numbers here invented, not the real ones): a fund
+    arrives as one lot, then a partial sell for proceeds that exceed the
+    original cost. Under the default cash-flow model, CumulativeNetInvested
+    goes positive (-1000 + 3000 = 2000), overstating the remaining
+    position's unrealized gain. Opted into AVERAGE cost basis, the
+    remaining cost basis must instead be reduced proportionally to the
+    fraction of units sold: -1000 * (40/100) = -400.
     """
     investments_path = tmp_path / "ParsedInvestments.xlsx"
     _write_transactions(investments_path, [
-        {"Broker": "OP", "Portfolio": "OP", "NormalizedInstrument": "OP-SUOMI A", "TransactionType": "VAIHTO - JÄTTÖ", "TradeDate": "2017-09-22", "Quantity": 54.2698, "CashAmount": -3141.19},
-        {"Broker": "OP", "Portfolio": "OP", "NormalizedInstrument": "OP-SUOMI A", "TransactionType": "SELL", "TradeDate": "2025-03-05", "Quantity": 29.2698, "CashAmount": 11862.76},
+        {"Broker": "OP", "Portfolio": "OP", "NormalizedInstrument": "OP-SUOMI A", "TransactionType": "VAIHTO - JÄTTÖ", "TradeDate": "2017-09-22", "Quantity": 100, "CashAmount": -1000},
+        {"Broker": "OP", "Portfolio": "OP", "NormalizedInstrument": "OP-SUOMI A", "TransactionType": "SELL", "TradeDate": "2025-03-05", "Quantity": 60, "CashAmount": 3000},
     ])
 
     instrument_master_path = tmp_path / "InstrumentMaster.xlsx"
@@ -359,8 +358,8 @@ def test_average_cost_basis_reduces_proportionally_on_partial_sell(tmp_path):
     positions, stats = build_positions(investments_path, instrument_master_path)
 
     rows = positions[positions["NormalizedInstrument"] == "OP-SUOMI A"]
-    assert list(rows["CumulativeQuantity"]) == pytest.approx([54.2698, 25.0])
-    assert rows["CumulativeNetInvested"].iloc[-1] == pytest.approx(-1447.03, abs=0.01)
+    assert list(rows["CumulativeQuantity"]) == pytest.approx([100, 40])
+    assert rows["CumulativeNetInvested"].iloc[-1] == pytest.approx(-400.0, abs=0.01)
     assert stats["positive_net_invested_instruments"] == {}
 
 
@@ -369,14 +368,14 @@ def test_average_cost_basis_not_opted_in_keeps_cash_flow_behavior(tmp_path):
     keep today's existing (cash-flow) behavior unchanged."""
     investments_path = tmp_path / "ParsedInvestments.xlsx"
     _write_transactions(investments_path, [
-        {"Broker": "OP", "Portfolio": "OP", "NormalizedInstrument": "OP-SUOMI A", "TransactionType": "VAIHTO - JÄTTÖ", "TradeDate": "2017-09-22", "Quantity": 54.2698, "CashAmount": -3141.19},
-        {"Broker": "OP", "Portfolio": "OP", "NormalizedInstrument": "OP-SUOMI A", "TransactionType": "SELL", "TradeDate": "2025-03-05", "Quantity": 29.2698, "CashAmount": 11862.76},
+        {"Broker": "OP", "Portfolio": "OP", "NormalizedInstrument": "OP-SUOMI A", "TransactionType": "VAIHTO - JÄTTÖ", "TradeDate": "2017-09-22", "Quantity": 100, "CashAmount": -1000},
+        {"Broker": "OP", "Portfolio": "OP", "NormalizedInstrument": "OP-SUOMI A", "TransactionType": "SELL", "TradeDate": "2025-03-05", "Quantity": 60, "CashAmount": 3000},
     ])
 
     positions, _ = build_positions(investments_path, _no_instrument_master(tmp_path))
 
     rows = positions[positions["NormalizedInstrument"] == "OP-SUOMI A"]
-    assert rows["CumulativeNetInvested"].iloc[-1] == pytest.approx(8721.57, abs=0.01)
+    assert rows["CumulativeNetInvested"].iloc[-1] == pytest.approx(2000.0, abs=0.01)
 
 
 def test_average_cost_basis_reaches_exactly_zero_after_full_sell(tmp_path):
