@@ -193,3 +193,29 @@ def test_append_to_output_reports_per_file_new_and_duplicate_counts(tmp_path):
     duplicate_by_file = dict(zip(second_run["SourceFile"], second_run["RowsDuplicate"]))
     assert duplicate_by_file["nordnet_sample.csv"] == 1
     assert duplicate_by_file["seligson_sample.xlsx"] == 1
+
+
+def test_append_to_output_persists_skipped_status_not_overwritten_to_imported(tmp_path):
+    """
+    Real bug: append_to_output() used to end with an unconditional
+    import_log_new["Status"] = "Imported" applied to every row, silently
+    overwriting the "Skipped: unsupported file" / "Skipped: format drift"
+    statuses parse_import_files() sets for files it never actually parsed -
+    undoing the entire audit trail those failure modes exist to provide.
+    A real, unsupported file sitting alongside valid ones must still show as
+    skipped in the persisted ImportLog sheet, not silently relabelled
+    "Imported".
+    """
+    input_dir = tmp_path / "input"
+    input_dir.mkdir()
+    shutil.copy(FIXTURES / "nordnet_sample.csv", input_dir / "nordnet_sample.csv")
+    (input_dir / "unrelated_reference.txt").write_text("not a broker export at all")
+
+    output_path = tmp_path / "ParsedInvestments.xlsx"
+
+    append_to_output(input_dir, output_path, None)
+
+    log = pd.read_excel(output_path, sheet_name=INVESTMENT_IMPORT_LOG_SHEET, dtype=object)
+    status_by_file = dict(zip(log["SourceFile"], log["Status"]))
+    assert status_by_file["nordnet_sample.csv"] == "Imported"
+    assert status_by_file["unrelated_reference.txt"] == "Skipped: unsupported file"

@@ -1,12 +1,16 @@
+import shutil
 import types
+from pathlib import Path
 
 import pandas as pd
 import pytest
 
 from finance_parser.budgeting import transaction_parser as budgeting_parser
-from finance_parser.common import RAW_COLUMNS
+from finance_parser.common import IMPORT_LOG_SHEET, RAW_COLUMNS
 from finance_parser.investments import investment_parser
 from finance_parser.investments.investment_common import INVESTMENT_RAW_COLUMNS
+
+BUDGETING_FIXTURES = Path(__file__).resolve().parent / "fixtures" / "budgeting"
 
 
 def _fake_parser(source_bank_attr, source_bank, *, matches, raises=None, rows=1):
@@ -151,3 +155,25 @@ def test_investment_unsupported_and_format_drift_are_both_non_fatal(tmp_path, mo
     assert statuses["fine.csv"] == "Parsed"
     assert statuses["drifted.csv"] == "Skipped: format drift"
     assert statuses["unrelated.csv"] == "Skipped: unsupported file"
+
+
+# --- End-to-end: the persisted ImportLog sheet must keep the skipped status,
+# not get overwritten by append_to_output()'s later "Status" = "Imported"
+# pass. This is the actual layer the investment-side bug lived in - a
+# per-file guard could still leave one blanket unconditional assignment
+# downstream that undoes it, which is exactly what happened.
+
+def test_budgeting_append_to_output_persists_skipped_status(tmp_path):
+    input_dir = tmp_path / "input"
+    input_dir.mkdir()
+    shutil.copy(BUDGETING_FIXTURES / "cash_sample.xlsx", input_dir / "cash_sample.xlsx")
+    (input_dir / "unrelated_reference.txt").write_text("not a bank export at all")
+
+    output_path = tmp_path / "ParsedTransactions.xlsx"
+
+    budgeting_parser.append_to_output(input_dir, output_path)
+
+    log = pd.read_excel(output_path, sheet_name=IMPORT_LOG_SHEET, dtype=object)
+    status_by_file = dict(zip(log["SourceFile"], log["Status"]))
+    assert status_by_file["cash_sample.xlsx"] == "Imported"
+    assert status_by_file["unrelated_reference.txt"] == "Skipped: unsupported file"

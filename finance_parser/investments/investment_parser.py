@@ -308,11 +308,19 @@ def append_to_output(input_path: Path, output_path: Path, instrument_master_path
         source_file = str(log_row.get("SourceFile", ""))
         counts = file_count_lookup.get(source_file)
         if counts is None:
+            # Real bug caught here: this used to be an unconditional
+            # `import_log_new["Status"] = "Imported"` applied to every row,
+            # which silently overwrote the "Skipped: unsupported file" /
+            # "Skipped: format drift" statuses parse_import_files() sets for
+            # files it never actually parsed - undoing the entire audit
+            # trail those failure modes exist to provide. A file with no
+            # entry in file_count_lookup was never successfully parsed
+            # (contributed zero rows to imported_raw), so its Status must be
+            # left exactly as parse_import_files() set it, not overwritten.
             continue
         import_log_new.at[idx, "RowsNew"] = counts["RowsNew"]
         import_log_new.at[idx, "RowsDuplicate"] = counts["RowsDuplicate"]
-
-    import_log_new["Status"] = "Imported"
+        import_log_new.at[idx, "Status"] = "Imported"
 
     combined_log = pd.concat([existing_log, import_log_new], ignore_index=True)
 
