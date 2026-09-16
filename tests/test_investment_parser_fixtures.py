@@ -4,7 +4,7 @@ from pathlib import Path
 import pandas as pd
 import pytest
 
-from investments.parsers import nordnet, seligson, evli, op_investment, coinmotion
+from investments.parsers import nordnet, seligson, evli, op_investment, coinmotion, nordea
 from finance_parser import settings as settings_module
 from finance_parser.investments.investment_common import INVESTMENT_IMPORT_LOG_SHEET
 from finance_parser.investments.investment_parser import append_to_output
@@ -197,6 +197,65 @@ def test_op_investment_fixture_parses_dividend():
     assert row["InstrumentName"] == "NOKIA OYJ"
     assert row["TransactionTypeRaw"] == "OSINKO"
     assert row["CashAmount"] == 13.92
+
+
+def test_nordea_fixture_parses_sell_transaction():
+    path = FIXTURES / "nordea_sample.xlsx"
+    ok, reason = nordea.can_parse(path)
+    assert ok, reason
+
+    df = nordea.parse_file(path, "2026-06-04 12:00:00")
+    row = df.iloc[0]
+
+    assert row["Broker"] == "NORDEA"
+    assert row["Portfolio"] == "NORDEA"
+    assert row["TransactionTypeRaw"] == "sell"
+    assert row["Quantity"] == -10.0
+    assert row["UnitPrice"] == 25.0
+    # Kauppahinta is already investor-perspective (positive = money
+    # received on a sell) - no sign flip needed, unlike Seligson's Summa.
+    assert row["CashAmount"] == 250.0
+
+
+def test_nordea_uses_fixed_instrument_name_from_settings(tmp_path):
+    """The export has no fund/instrument name column at all - the name must
+    come from settings, same pattern as EVLI's fixed_instrument_name."""
+    settings_path = tmp_path / "settings.yaml"
+    settings_path.write_text(
+        """
+project:
+  name: "Test"
+  locale: "fi_FI"
+  default_currency: "EUR"
+paths:
+  budgeting_input: "input/budgeting"
+  budgeting_output: "output/budgeting/ParsedTransactions.xlsx"
+  budgeting_rules: "rules/budgeting/TransactionRules.xlsx"
+  investment_input: "input/investments"
+  investment_output: "output/investments/ParsedInvestments.xlsx"
+  investment_rules: "rules/investments/InstrumentMaster.xlsx"
+budgeting:
+  default_include: "YES"
+  source_bank_aliases: {}
+  source_account_inference: {}
+investments:
+  broker_defaults:
+    NORDEA:
+      fixed_instrument_name: "Example Fund"
+""",
+        encoding="utf-8",
+    )
+    loaded = AppSettings.load(settings_path=settings_path, example_path=Path("does-not-exist.yaml"))
+
+    old_cache = settings_module._SETTINGS_CACHE
+    try:
+        settings_module._SETTINGS_CACHE = loaded
+        path = FIXTURES / "nordea_sample.xlsx"
+        df = nordea.parse_file(path, "2026-06-04 12:00:00")
+    finally:
+        settings_module._SETTINGS_CACHE = old_cache
+
+    assert list(df["InstrumentName"].unique()) == ["Example Fund"]
 
 
 def test_coinmotion_fixture_parses_deposit_and_buy():

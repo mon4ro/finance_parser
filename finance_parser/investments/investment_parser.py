@@ -23,7 +23,7 @@ from finance_parser.investments.investment_common import (
     write_investment_output_workbook,
 )
 
-from finance_parser.investments.parsers import nordnet, seligson, evli, op_investment, coinmotion
+from finance_parser.investments.parsers import nordnet, seligson, evli, op_investment, coinmotion, nordea
 
 
 PROJECT_ROOT = Path(__file__).resolve().parents[2]
@@ -40,6 +40,7 @@ SUPPORTED_INVESTMENT_PARSERS = [
     evli,
     op_investment,
     coinmotion,
+    nordea,
 ]
 
 
@@ -342,7 +343,7 @@ def append_to_output(input_path: Path, output_path: Path, instrument_master_path
 
 def main() -> None:
     parser = argparse.ArgumentParser(
-        description="Modular investment transaction parser. Currently supports Nordnet, manually parsed Seligson, EVLI, and OP investment exports."
+        description="Modular investment transaction parser. Currently supports Nordnet, manually parsed Seligson, EVLI, OP, Coinmotion, and Nordea investment exports."
     )
     parser.add_argument(
         "--input",

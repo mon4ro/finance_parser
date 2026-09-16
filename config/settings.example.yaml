@@ -68,6 +68,12 @@ investments:
     SELIGSON:
       instrument_name_template: "SELIGSON {portfolio}"
 
+    NORDEA:
+      # Example policy: Nordea's own Excel export has no instrument/fund
+      # name column at all - one custody account here holds one fund, so the
+      # name comes from settings, same pattern as EVLI above.
+      fixed_instrument_name: "FUND NAME"
+
   # Which household member each Broker/Portfolio belongs to. A plain string
   # applies to every portfolio under that broker; a mapping from Portfolio to
   # value lets one broker hold accounts for more than one person (with an
@@ -76,6 +82,7 @@ investments:
   # InstrumentMaster.xlsx - same reasoning as Owner on the budgeting side.
   portfolio_owners:
     EVLI: "PERSONAL"
+    NORDEA: "PERSONAL"
     NORDNET:
       "20429585": "PERSONAL"
       default: "HOUSEHOLD"
