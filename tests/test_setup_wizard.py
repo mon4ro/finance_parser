@@ -1,3 +1,6 @@
+from pathlib import Path
+
+import pytest
 import yaml
 
 from finance_parser import setup_wizard as wizard
@@ -179,3 +182,56 @@ def test_write_settings_with_no_overrides_does_not_prompt(tmp_path):
 
     assert written is False
     assert not settings_path.exists()
+
+
+def test_cli_has_dry_run_and_keep_temp():
+    parser = wizard.build_arg_parser()
+    args = parser.parse_args(["--dry-run", "--keep-temp"])
+
+    assert args.dry_run is True
+    assert args.keep_temp is True
+
+
+def test_keep_temp_requires_dry_run(monkeypatch):
+    # main() must reject this combination before touching any real path -
+    # the ValueError check runs immediately after argument parsing.
+    monkeypatch.setattr("sys.argv", ["setup_wizard.py", "--keep-temp"])
+
+    with pytest.raises(ValueError):
+        wizard.main()
+
+
+def test_run_wizard_dry_run_never_touches_real_default_paths(tmp_path, monkeypatch):
+    """
+    The whole point of --dry-run: run_wizard() must accept explicit sandbox
+    paths and never fall back to the real DEFAULT_* module paths while doing
+    so - this is what main()'s --dry-run branch relies on.
+    """
+    sandbox_settings = tmp_path / "settings.yaml"
+    sandbox_budgeting_rules = tmp_path / "TransactionRules.xlsx"
+    sandbox_investment_rules = tmp_path / "InstrumentMaster.xlsx"
+
+    real_settings_touched = []
+
+    def guard_open(self, *args, **kwargs):
+        if self == wizard.DEFAULT_SETTINGS_PATH:
+            real_settings_touched.append(self)
+        return original_open(self, *args, **kwargs)
+
+    original_open = Path.open
+    monkeypatch.setattr(Path, "open", guard_open)
+
+    # scope=budgeting only, no brokers selected, no cash tracking, no unsupported banks
+    _feed(monkeypatch, ["1", "", "n", ""])
+
+    wizard.run_wizard(
+        settings_path=sandbox_settings,
+        budgeting_template=tmp_path / "missing_template.xlsx",
+        budgeting_rules=sandbox_budgeting_rules,
+        investment_template=tmp_path / "missing_template2.xlsx",
+        investment_rules=sandbox_investment_rules,
+        dry_run=True,
+    )
+
+    assert real_settings_touched == []
+    assert not sandbox_settings.exists()

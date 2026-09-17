@@ -17,6 +17,15 @@ what you answer - it never drops or overwrites unrelated existing settings:
 python setup_wizard.py
 ```
 
+Try it risk-free first with `--dry-run` - it copies your real `config/settings.yaml`
+and rule workbooks (if they exist) into a disposable temporary sandbox, runs the whole
+wizard against that instead, and never touches the real files:
+
+```bash
+python setup_wizard.py --dry-run
+python setup_wizard.py --dry-run --keep-temp  # inspect the sandbox output afterward
+```
+
 Or copy the example settings and edit the private local file by hand:
 
 ```bash

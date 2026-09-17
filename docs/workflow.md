@@ -5,7 +5,9 @@
 Run `python setup_wizard.py` before the first real pipeline run. It asks what data
 you'll import, which supported banks/brokers you use, and the account-level facts
 each one needs, then writes `config/settings.yaml` only after showing you the exact
-result and getting confirmation. See the README's Setup section for details.
+result and getting confirmation. Use `python setup_wizard.py --dry-run` to try it
+against a disposable sandbox copy first - your real settings/rules are never touched.
+See the README's Setup section for details.
 
 ## Normal budgeting workflow
 

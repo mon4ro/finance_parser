@@ -1,6 +1,8 @@
 from __future__ import annotations
 
+import argparse
 import shutil
+import tempfile
 from pathlib import Path
 from typing import Any
 
@@ -280,11 +282,24 @@ def write_settings(overrides: dict[str, Any], settings_path: Path = DEFAULT_SETT
     return True
 
 
-def main() -> None:
-    print("finance_parser setup wizard")
+def run_wizard(
+    *,
+    settings_path: Path = DEFAULT_SETTINGS_PATH,
+    budgeting_template: Path = DEFAULT_BUDGETING_TEMPLATE,
+    budgeting_rules: Path = DEFAULT_BUDGETING_RULES,
+    investment_template: Path = DEFAULT_INVESTMENT_TEMPLATE,
+    investment_rules: Path = DEFAULT_INVESTMENT_RULES,
+    dry_run: bool = False,
+) -> None:
+    print("finance_parser setup wizard" + (" (DRY RUN)" if dry_run else ""))
     print("============================")
-    print("This helps you configure config/settings.yaml for your own banks/brokers.")
-    print("Nothing is written until you confirm at the end.")
+    if dry_run:
+        print("Dry run: working against a disposable copy of your real settings/rules.")
+        print(f"  settings: {settings_path}")
+        print("Nothing in your real config/settings.yaml or rules/ will be touched.")
+    else:
+        print("This helps you configure config/settings.yaml for your own banks/brokers.")
+        print("Nothing is written until you confirm at the end.")
 
     scope = choose_scope()
     overrides: dict[str, Any] = {}
@@ -328,15 +343,26 @@ def main() -> None:
         print("Not currently supported: " + ", ".join(unsupported))
         print(f"Please open a request here: {GITHUB_ISSUES_URL}")
 
-    copied = offer_template_copy(scope)
-    write_settings(overrides)
+    copied = offer_template_copy(
+        scope,
+        budgeting_template=budgeting_template,
+        budgeting_rules=budgeting_rules,
+        investment_template=investment_template,
+        investment_rules=investment_rules,
+    )
+    write_settings(overrides, settings_path=settings_path)
 
     print()
-    print("Setup wizard complete.")
+    print("Setup wizard dry run complete." if dry_run else "Setup wizard complete.")
     if copied:
         print("Rule workbook(s) created from template:")
         for path in copied:
             print(f"  - {path}")
+    if dry_run:
+        print()
+        print("Dry run only: your real config/settings.yaml and rules/ were not touched.")
+        return
+
     print()
     print("Next steps:")
     if "budgeting" in scope:
@@ -345,6 +371,68 @@ def main() -> None:
     if "investments" in scope:
         print("  3. Put your broker export files into input/investments/")
         print("  4. python run_investment_pipeline.py --dry-run")
+
+
+def build_arg_parser() -> argparse.ArgumentParser:
+    parser = argparse.ArgumentParser(
+        description="Interactively configure config/settings.yaml for your own banks/brokers."
+    )
+    parser.add_argument(
+        "--dry-run",
+        action="store_true",
+        help="Run against a temporary sandbox copy of your real settings.yaml and rule workbooks "
+             "(if they exist) instead of the real files - lets you try the wizard without any risk "
+             "of overwriting your real configuration. The sandbox is deleted afterward unless "
+             "--keep-temp is also given.",
+    )
+    parser.add_argument(
+        "--keep-temp",
+        action="store_true",
+        help="With --dry-run, keep the temporary sandbox directory for inspection afterward instead "
+             "of deleting it.",
+    )
+    return parser
+
+
+def main() -> None:
+    args = build_arg_parser().parse_args()
+
+    if args.keep_temp and not args.dry_run:
+        raise ValueError("--keep-temp can only be used together with --dry-run")
+
+    if not args.dry_run:
+        run_wizard()
+        return
+
+    temp_dir = Path(tempfile.mkdtemp(prefix="finance_parser_setup_wizard_dry_run_"))
+    sandbox_settings = temp_dir / "settings.yaml"
+    sandbox_budgeting_rules = temp_dir / "rules" / "budgeting" / DEFAULT_BUDGETING_RULES.name
+    sandbox_investment_rules = temp_dir / "rules" / "investments" / DEFAULT_INVESTMENT_RULES.name
+    sandbox_budgeting_rules.parent.mkdir(parents=True, exist_ok=True)
+    sandbox_investment_rules.parent.mkdir(parents=True, exist_ok=True)
+
+    if DEFAULT_SETTINGS_PATH.exists():
+        shutil.copy2(DEFAULT_SETTINGS_PATH, sandbox_settings)
+    if DEFAULT_BUDGETING_RULES.exists():
+        shutil.copy2(DEFAULT_BUDGETING_RULES, sandbox_budgeting_rules)
+    if DEFAULT_INVESTMENT_RULES.exists():
+        shutil.copy2(DEFAULT_INVESTMENT_RULES, sandbox_investment_rules)
+
+    try:
+        run_wizard(
+            settings_path=sandbox_settings,
+            budgeting_template=DEFAULT_BUDGETING_TEMPLATE,
+            budgeting_rules=sandbox_budgeting_rules,
+            investment_template=DEFAULT_INVESTMENT_TEMPLATE,
+            investment_rules=sandbox_investment_rules,
+            dry_run=True,
+        )
+    finally:
+        if args.keep_temp:
+            print()
+            print(f"Sandbox kept for inspection: {temp_dir}")
+        else:
+            shutil.rmtree(temp_dir, ignore_errors=True)
 
 
 if __name__ == "__main__":
