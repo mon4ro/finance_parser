@@ -24,9 +24,16 @@ The pipeline runs:
 
 ```text
 1. transaction parser
-2. transaction normaliser
-3. transaction categoriser
+2. investment dividend parser (Nordnet/EVLI real dividend income, from the
+   investment side's DividendHistory.xlsx - auto-skipped if it doesn't exist)
+3. transaction normaliser
+4. dividend income enrichment (OP-held instrument dividends, cross-referenced
+   against their real bank deposit - also auto-skipped if DividendHistory.xlsx
+   doesn't exist)
+5. transaction categoriser
 ```
+
+Pass `--skip-dividends` to disable steps 2 and 4 explicitly.
 
 ## Budgeting dry-run workflow
 
@@ -51,6 +58,7 @@ The individual budgeting scripts live in the package and can be run directly whe
 ```bash
 python -m finance_parser.budgeting.transaction_parser
 python -m finance_parser.budgeting.transaction_normaliser
+python -m finance_parser.budgeting.enrich_dividend_income
 python -m finance_parser.budgeting.transaction_categoriser
 ```
 
@@ -59,6 +67,7 @@ Individual dry-run commands:
 ```bash
 python -m finance_parser.budgeting.transaction_parser --dry-run
 python -m finance_parser.budgeting.transaction_normaliser --dry-run
+python -m finance_parser.budgeting.enrich_dividend_income --dry-run
 python -m finance_parser.budgeting.transaction_categoriser --dry-run
 ```
 

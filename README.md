@@ -39,6 +39,7 @@ Run individual budgeting steps:
 ```bash
 python -m finance_parser.budgeting.transaction_parser
 python -m finance_parser.budgeting.transaction_normaliser
+python -m finance_parser.budgeting.enrich_dividend_income
 python -m finance_parser.budgeting.transaction_categoriser
 ```
 
@@ -47,8 +48,20 @@ Useful individual dry-runs:
 ```bash
 python -m finance_parser.budgeting.transaction_parser --dry-run
 python -m finance_parser.budgeting.transaction_normaliser --dry-run
+python -m finance_parser.budgeting.enrich_dividend_income --dry-run
 python -m finance_parser.budgeting.transaction_categoriser --dry-run
 ```
+
+The full pipeline (`run_budgeting_pipeline.py`) also runs two dividend-income
+stages between the normaliser and categoriser: an extra parser pass that
+turns the investment side's own `DividendHistory.xlsx` into real income rows
+for Nordnet/EVLI-held instruments (which never reach a bank transaction at
+all - the cash sits in the broker's own balance instead), and
+`enrich_dividend_income.py`, which cross-references OP-held instruments'
+dividends against their real bank deposit by date and exact amount. Both
+auto-skip with a message if `DividendHistory.xlsx` doesn't exist yet (i.e.
+the investment pipeline hasn't been run) - pass `--skip-dividends` to
+disable them explicitly.
 
 ## Investment workflow
 

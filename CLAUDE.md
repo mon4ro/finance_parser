@@ -10,7 +10,7 @@ The budgeting pipeline (and the investment pipeline, in miniature) is three
 strictly separated layers. Each layer is a different script/module, and each
 runs on the previous layer's *output*, never inline:
 
-1. **Raw** — `finance_parser/budgeting/parsers/{op,nordea,norwegian,spankki}.py`
+1. **Raw** — `finance_parser/budgeting/parsers/{op,nordea,norwegian,spankki,cash,investment_dividends}.py`
    Bank-specific column mapping only: read the bank's native export, emit one
    row per `RAW_COLUMNS` (RawID, dates, amount, RawReceiver, reference,
    etc.). **A parser module must never set `Include`, `Owner`,
@@ -18,7 +18,11 @@ runs on the previous layer's *output*, never inline:
    editing a parser and find yourself wanting to special-case a receiver name
    or an account's default owner in there, stop — that belongs in
    `config/settings.yaml` (account-level facts) or `TransactionRules.xlsx`
-   (content-based rules), not in parser code.
+   (content-based rules), not in parser code. `cash.py` and
+   `investment_dividends.py` aren't bank exports (a manually maintained
+   ledger and a cross-pipeline read of the investment side's
+   `DividendHistory.xlsx`, respectively) but follow the exact same contract
+   and flow through the exact same three layers.
 
 2. **Unified (normalised)** — `raw_to_unified_rows()` in
    `finance_parser/common.py`, invoked by `transaction_parser.py`.
@@ -35,12 +39,22 @@ runs on the previous layer's *output*, never inline:
 3. **Classified** — `transaction_categoriser.py`, driven by the
    `CategoryRules` and `OwnershipRules` sheets in `TransactionRules.xlsx`.
    This is the only place `Supercategory`/`Category`/`Subcategory` should
-   be set from content-matching rules today. A row is only touched if its
-   `Review/Notes` cell is blank — see below.
+   be set from *content-matching* rules today. A row is only touched if its
+   `Review/Notes` cell is blank — see below. `enrich_dividend_income.py` is
+   a narrow, deliberate exception: it also sets these three fields, but via
+   structured cross-reference against the investment pipeline's own
+   `DividendHistory.xlsx` (matched by date + exact amount) rather than
+   receiver-text rules — for the one case (OP-held instrument dividends)
+   where the real receiver text is useless for categorisation (it's just
+   the account holder's own name, an OP export quirk). Still respects
+   `Review/Notes` and never overwrites an already-filled cell.
 
-Pipeline order (`run_budgeting_pipeline.py`): **parser → normaliser →
-categoriser**. Investments mirror this with `apply_instrument_master()` in
-`investment_common.py` playing the categoriser's role, driven by
+Pipeline order (`run_budgeting_pipeline.py`): **parser → investment
+dividend parser → normaliser → dividend income enrichment → categoriser**
+(the two dividend stages auto-skip with a message if the investment
+pipeline hasn't been run yet, i.e. `DividendHistory.xlsx` doesn't exist).
+Investments mirror the core three layers with `apply_instrument_master()`
+in `investment_common.py` playing the categoriser's role, driven by
 `InstrumentMaster.xlsx`.
 
 **Why the separation matters:** `Owner` and `Include` are personal/
@@ -56,11 +70,13 @@ settings file and rule sheet contents are personal.
 schema and `transaction_normaliser.py` code both support `SetOwner`,
 `SetSupercategory`, `SetCategory`, `SetSubcategory` columns — but as of this
 writing, zero rows in the live `TransactionRules.xlsx` sheet populate them
-(281 rows use `SetNormalizedReceiver`, 10 use `SetInclude`). All real
-categorisation happens via `CategoryRules`/`OwnershipRules` and the
-categoriser. Don't start populating those normaliser-sheet columns without
-deciding whether that's intentionally reclaiming the categoriser's job —
-two rule sheets quietly doing the same thing is a maintenance trap.
+(306 rows use `SetNormalizedReceiver`, 13 use `SetInclude`). All real
+categorisation happens via `CategoryRules`/`OwnershipRules`, the
+categoriser, and (for dividend income specifically)
+`enrich_dividend_income.py`'s cross-reference. Don't start populating those
+normaliser-sheet columns without deciding whether that's intentionally
+reclaiming the categoriser's job — two rule sheets quietly doing the same
+thing is a maintenance trap.
 
 ## Include / Owner / ReviewStatus semantics
 
