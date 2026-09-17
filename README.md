@@ -6,7 +6,18 @@ The project keeps parsing, normalisation, categorisation, and local manual editi
 
 ## Setup
 
-Copy the public example settings and edit the private local file:
+Run the interactive setup wizard to generate `config/settings.yaml` without hand-editing
+YAML - it asks what data you'll import (budgeting/investments/both), which of the
+supported banks/brokers you use, and the account-level facts each one needs (owner
+labels, OP filename prefixes, portfolio numbers, etc.), then shows you the exact result
+and asks for confirmation before writing anything. Re-running it later only adds/updates
+what you answer - it never drops or overwrites unrelated existing settings:
+
+```bash
+python setup_wizard.py
+```
+
+Or copy the example settings and edit the private local file by hand:
 
 ```bash
 cp config/settings.example.yaml config/settings.yaml
