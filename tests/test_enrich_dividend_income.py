@@ -2,6 +2,7 @@ import pandas as pd
 from openpyxl import Workbook
 
 from finance_parser.budgeting.enrich_dividend_income import (
+    find_uncovered_broker_dividends,
     load_dividend_events,
     match_dividend_income,
 )
@@ -145,3 +146,37 @@ def test_load_dividend_events_filters_to_matchable_brokers_only(tmp_path):
 
     assert list(events["Broker"].unique()) == ["OP"]
     assert len(events) == 1
+
+
+def test_uncovered_broker_dividend_is_flagged_not_silently_dropped(tmp_path):
+    """A real dividend from a broker neither this script's MATCHABLE_BROKERS
+    nor investment_dividends.py's SYNTHETIC_BROKERS covers must be reported,
+    not silently disappear from both mechanisms at once."""
+    path = tmp_path / "DividendHistory.xlsx"
+    wb = Workbook()
+    ws = wb.active
+    ws.title = "DividendHistory"
+    ws.append(DIVIDEND_HISTORY_HEADERS)
+    ws.append(["2021-06-15", 2021, 6, "OP", "OP", "PERSON_A", "AOT", "SAMPO A", 0, 0, 100.0])
+    ws.append(["2021-06-15", 2021, 6, "SELIGSON", "SELIGSON", "PERSON_A", "AOT", "GLOBAL TOP 25", 0, 0, 40.0])
+    wb.save(path)
+
+    uncovered = find_uncovered_broker_dividends(path)
+
+    assert len(uncovered) == 1
+    assert uncovered[0][0] == "SELIGSON"
+    assert uncovered[0][3] == 40.0
+
+
+def test_all_covered_brokers_report_no_uncovered_dividends(tmp_path):
+    path = tmp_path / "DividendHistory.xlsx"
+    wb = Workbook()
+    ws = wb.active
+    ws.title = "DividendHistory"
+    ws.append(DIVIDEND_HISTORY_HEADERS)
+    ws.append(["2021-06-15", 2021, 6, "OP", "OP", "PERSON_A", "AOT", "SAMPO A", 0, 0, 100.0])
+    ws.append(["2021-06-15", 2021, 6, "NORDNET", "1", "PERSON_A", "AOT", "FORTUM", 0, 0, 50.0])
+    ws.append(["2021-06-15", 2021, 6, "EVLI", "EVLI", "PERSON_A", "", "NOKIA", 0, 0, 30.0])
+    wb.save(path)
+
+    assert find_uncovered_broker_dividends(path) == []

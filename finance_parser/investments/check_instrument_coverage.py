@@ -231,6 +231,7 @@ def main() -> None:
         stale_days=args.stale_days,
     )
 
+    print("Coverage check complete.")
     print(f"Active positions checked: {gaps['active_instrument_count']}")
 
     if not has_gaps(gaps):

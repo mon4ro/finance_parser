@@ -684,7 +684,8 @@ def print_changes(changes: list[RowChange], max_rows: int) -> None:
         print(f"  ... {remaining} more changed row(s) not printed. Use --max-print 0 to print all.")
 
 
-def print_stats(stats: CategoriseStats, *, recategorise_scope: str | None) -> None:
+def print_stats(stats: CategoriseStats, *, recategorise_scope: str | None, dry_run: bool = False) -> None:
+    print("Categoriser complete." if not dry_run else "Categoriser dry run complete.")
     print("Categoriser statistics:")
     print(f"Rows scanned:                       {stats.rows_scanned}")
     print(f"Rows protected by Review/Notes:     {stats.rows_protected_by_comments}")
@@ -755,12 +756,14 @@ def main() -> None:
         write_mode=args.write_mode,
     )
     print_changes(changes, args.max_print)
-    print_stats(stats, recategorise_scope=recategorise_scope)
+    print_stats(stats, recategorise_scope=recategorise_scope, dry_run=args.dry_run)
 
     if args.dry_run:
-        print("Dry run only. No workbook changes written.")
+        print()
+        print("Dry run only: workbook was not modified.")
     elif changes:
-        print(f"Updated {args.workbook}")
+        print()
+        print(f"Output workbook: {args.workbook}")
         print("ChangeLog appended.")
 
 

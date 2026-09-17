@@ -7,6 +7,7 @@ from pathlib import Path
 import pandas as pd
 
 from finance_parser.common import clean_for_excel
+from finance_parser.budgeting.parsers.investment_dividends import SYNTHETIC_BROKERS
 from finance_parser.utilities.fresh_workbook_writer import (
     append_changelog_row,
     read_workbook_values_only,
@@ -32,6 +33,18 @@ SCRIPT_NAME = "enrich_dividend_income.py"
 # investment_dividends.py's synthetic entries, not this cross-reference.
 MATCHABLE_BROKERS = {"OP"}
 
+# Every real dividend this project has ever seen comes from one of these
+# three brokers (confirmed against real DividendHistory.xlsx: exactly
+# OP/NORDNET/EVLI, zero Nordea or Seligson events - Nordea's current
+# holding is an accumulating fund with no cash distributions, and Seligson
+# is direct-purchase only, no cash ever sits there). Not a hardcoded
+# assumption though: find_uncovered_broker_dividends() below checks this
+# against real data every run, so a real dividend from any OTHER broker -
+# now or in the future - gets flagged loudly instead of silently dropped
+# by both this script's MATCHABLE_BROKERS filter and
+# investment_dividends.py's SYNTHETIC_BROKERS filter.
+COVERED_BROKERS = MATCHABLE_BROKERS | SYNTHETIC_BROKERS
+
 # Small settlement-lag tolerance for the (rare) case a dividend doesn't
 # credit same-day - amount match stays exact, only the date gets slack.
 DATE_TOLERANCE_DAYS = 3
@@ -54,6 +67,31 @@ def load_dividend_events(dividend_history_path: Path) -> pd.DataFrame:
     df = df[df["NetDividendEUR"] > 0]
 
     return df
+
+
+def find_uncovered_broker_dividends(dividend_history_path: Path) -> list[tuple[str, str, str, float]]:
+    """
+    Real dividend events from a broker that neither this script (OP-held
+    instruments, matched against a real bank transaction) nor
+    investment_dividends.py (Nordnet/EVLI-held instruments, synthesized
+    directly) knows how to handle - see COVERED_BROKERS above. Returns
+    (Broker, NormalizedInstrument, TradeDate, NetDividendEUR) tuples for
+    reporting; never silently dropped.
+    """
+    df = pd.read_excel(dividend_history_path, sheet_name=DIVIDEND_HISTORY_SHEET, dtype=object)
+    df.columns = [str(c).strip() for c in df.columns]
+
+    df["TradeDate"] = pd.to_datetime(df["TradeDate"], errors="coerce")
+    df["NetDividendEUR"] = pd.to_numeric(df["NetDividendEUR"], errors="coerce").round(2)
+    df = df.dropna(subset=["TradeDate", "NetDividendEUR"])
+    df = df[df["NetDividendEUR"] > 0]
+
+    uncovered = df[~df["Broker"].astype(str).isin(COVERED_BROKERS)]
+
+    return [
+        (row["Broker"], row.get("NormalizedInstrument", ""), row["TradeDate"].strftime("%Y-%m-%d"), float(row["NetDividendEUR"]))
+        for _, row in uncovered.iterrows()
+    ]
 
 
 def _is_blank(value: object) -> bool:
@@ -170,6 +208,7 @@ def enrich_dividend_income(
 
     dividend_events = load_dividend_events(dividend_history_path)
     updated, stats = match_dividend_income(unified, dividend_events)
+    stats["uncovered_broker_dividends"] = find_uncovered_broker_dividends(dividend_history_path)
 
     if dry_run or stats["fields_updated"] == 0:
         return stats
@@ -244,6 +283,19 @@ def main() -> None:
         print(f"Ambiguous dividend events ({len(stats['ambiguous'])}) - more than one candidate row, skipped:")
         for instrument, date, amount, count in stats["ambiguous"]:
             print(f"  - {instrument}: {date}, {amount} EUR ({count} candidates)")
+
+    if stats["uncovered_broker_dividends"]:
+        print()
+        print(
+            f"WARNING: {len(stats['uncovered_broker_dividends'])} real dividend event(s) from a broker "
+            f"neither this script nor investment_dividends.py currently covers (COVERED_BROKERS = "
+            f"{sorted(COVERED_BROKERS)}):"
+        )
+        for broker, instrument, date, amount in stats["uncovered_broker_dividends"]:
+            print(f"  - {broker} / {instrument}: {date}, {amount} EUR")
+        print("  These are not reflected in budgeting-side income at all - add this broker to")
+        print("  MATCHABLE_BROKERS (if it settles same-day into a real bank transaction, like OP) or")
+        print("  SYNTHETIC_BROKERS in investment_dividends.py (if it doesn't, like Nordnet/EVLI).")
 
     if args.dry_run:
         print()
