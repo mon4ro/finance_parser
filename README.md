@@ -74,6 +74,22 @@ from Yahoo, so a fund's first-ever fetch also backfills 60 months of assumed-con
 history, tagged `BACKFILLED_ASSUMED_CONSTANT` to keep it distinguishable from a real
 observed snapshot (`LIVE_FETCH`). Pass `--skip-fund-holdings` to disable it.
 
+Once `FundHoldingsSnapshot.xlsx` exists, run the look-through exposure calculator
+on demand (not part of the main pipeline - nothing downstream depends on it) to
+see real total exposure per company, combining direct stock holdings with
+indirect exposure via funds that also hold the same company:
+
+```bash
+python -m finance_parser.investments.build_look_through_exposure
+```
+
+Writes `output/investments/LookThroughExposure.xlsx` (a `LookThroughByCompany`
+summary sheet plus a `LookThroughDetail` sheet showing which source instrument
+contributed how much to each total). A stock held both directly and inside a
+fund is merged into one combined total, matched by the shared Yahoo ticker
+(`PriceSymbol`) - not by name, since a fund's constituent listing and this
+project's own instrument naming don't always spell a company the same way.
+
 ## Investment workflow
 
 Run the full investment pipeline (parse, fetch prices, fetch FX rates, build positions,

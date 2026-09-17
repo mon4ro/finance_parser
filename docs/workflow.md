@@ -116,7 +116,21 @@ assumed-constant history (tagged `BACKFILLED_ASSUMED_CONSTANT`, distinct from a 
 `LIVE_FETCH` snapshot) since no historical holdings data exists from Yahoo. Pass
 `--skip-fund-holdings` to disable it.
 
-Step 6 halts the pipeline if an actively-held instrument is missing classification, a
+Once `FundHoldingsSnapshot.xlsx` exists, run the look-through exposure calculator
+on demand - not part of the main pipeline, since nothing downstream depends on it:
+
+```bash
+python -m finance_parser.investments.build_look_through_exposure
+```
+
+Combines direct stock positions with indirect fund exposure into
+`output/investments/LookThroughExposure.xlsx` - a `LookThroughByCompany` summary
+(total exposure per company) plus a `LookThroughDetail` breakdown (which source
+instrument contributed how much). Direct and indirect exposure to the same real
+company merge via the shared Yahoo `PriceSymbol`, not by name. Optional `--month
+YYYY-MM` overrides the default (the latest month in `MonthlyPositionValue.xlsx`).
+
+Step 7 halts the pipeline if an actively-held instrument is missing classification, a
 price symbol, or a recent price - pass `--force` to proceed anyway with incomplete
 net worth data.
 
