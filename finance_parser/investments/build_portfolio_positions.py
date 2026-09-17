@@ -38,6 +38,13 @@ POSITIONS_COLUMNS = [
     # Appended, not inserted mid-list - see the same note on
     # MONTHLY_VALUE_COLUMNS in build_monthly_position_value.py.
     "InstrumentType",
+    # CumulativeQuantity on the CURRENT (latest) share-count basis - equal to
+    # CumulativeQuantity except for a row before a real stock split, where
+    # it's divided by the split ratio. See compute_split_ratios()'s
+    # docstring for why this is needed: the fetched price series is already
+    # on this same current-share basis for its entire history, not just
+    # since the split.
+    "SplitAdjustedQuantity",
 ]
 
 # Quantity effect classification. Real InvestmentTransactions data (2026-09)
@@ -78,6 +85,19 @@ QUANTITY_ADD_TYPES = {
     # the *rights*, not real share count, and are left unmapped (neutral) to
     # avoid double-counting the same corporate action twice.
     "MO OTTO EMISSION YHT",
+    # Real bug found and fixed: Finnair's 2023 rights issue - a separate real
+    # share-issuance step from "MO OTTO EMISSION YHT" above, not a duplicate
+    # of it. Confirmed against real data and directly by the user: summing
+    # every real quantity-changing event up to and including this one landed
+    # exactly on the broker's own "SPLIT AP OTTO" row (the 100:1 reverse
+    # split a few months later), whose Quantity is the real pre-split total
+    # being removed - only once this event's real shares were counted too.
+    # Previously unhandled, silently dropping a real multi-thousand-share
+    # holding for several months; "MERKINNÄN MAKSU" - the same event's
+    # payment-only informational row, same Quantity/CashAmount but
+    # TotalQuantity=0 - stays neutral, not counted here too, to avoid
+    # double-counting the one real event.
+    "MERKINTÄ AP JÄTTÖ",
     # Manually-seeded pre-tracking-period holdings (see load_opening_positions()
     # and InstrumentMaster.xlsx's OpeningPositions sheet) - not a real row from
     # any broker export. A plain add is correct here since these are always
@@ -116,7 +136,7 @@ KNOWN_NEUTRAL_SPLIT_PAIR_TYPES = {"SPLIT AP OTTO"}
 # purchase would.
 # Dividends, interest, fees, tax, and deposits/withdrawals are deliberately
 # excluded - they don't represent money invested in the instrument itself.
-CASH_FLOW_TYPES = {"BUY", "SELL", "OPENING BALANCE", "VAIHTO - JÄTTÖ", "VAIHTO AP-JÄTTÖ", "JÄTTÖ SIIRTO"}
+CASH_FLOW_TYPES = {"BUY", "SELL", "OPENING BALANCE", "VAIHTO - JÄTTÖ", "VAIHTO AP-JÄTTÖ", "JÄTTÖ SIIRTO", "MERKINTÄ AP JÄTTÖ"}
 
 # Confidently understood as having NO effect on quantity or invested cash -
 # real cash-flow/informational events, not a gap in coverage. Kept separate
@@ -138,6 +158,15 @@ KNOWN_NEUTRAL_TYPES = {
     # dataset, so this doesn't risk hiding a real standalone addition for
     # any other holding.
     "DELIVERY",
+    # Finnair 2023 rights issue, same real event as "MERKINTÄ AP JÄTTÖ"
+    # above: "MERKINNÄN MAKSU" is the payment-only informational row for the
+    # same subscription (identical Quantity/CashAmount, but TotalQuantity=0 -
+    # confirms it doesn't itself move the real share count), and "JÄTTÖ
+    # IRROTUS" is the earlier subscription-*rights* detachment notification
+    # (rights received per existing share, not new shares). Both explicitly
+    # neutral rather than left "unhandled", now that MERKINTÄ AP JÄTTÖ
+    # correctly carries the real quantity/cash effect on its own.
+    "MERKINNÄN MAKSU", "JÄTTÖ IRROTUS",
 } | KNOWN_NEUTRAL_SPLIT_PAIR_TYPES
 
 
@@ -371,6 +400,88 @@ def classify_cash_delta(row: pd.Series) -> float:
     return 0.0
 
 
+def compute_split_ratios(df: pd.DataFrame, group_cols: list[str]) -> dict[tuple, list[tuple]]:
+    """
+    Real bug found and fixed: a broker-fetched price series (Yahoo) for an
+    instrument that later did a stock split reflects the CURRENT share count
+    for its entire history, not just from the split date forward - confirmed
+    against real Finnair and Norwegian Air Shuttle data (no price
+    discontinuity at all around the real split date, when a real, unadjusted
+    split would show a sharp jump). CumulativeQuantity, though, correctly
+    tracks the real historical share count at each date. Multiplying the two
+    directly overstates value for any date before the split by exactly the
+    split ratio - real case: one single month showed ~40x its real value.
+
+    Returns each (Broker, Portfolio, NormalizedInstrument) group's list of
+    (split_date, ratio) pairs, ratio = real pre-split quantity / real
+    post-split quantity, both read directly from the paired JÄTTÖ (post-split
+    absolute count) and OTTO (real pre-split count being removed) rows'
+    own raw Quantity - not derived from the running CumulativeQuantity total,
+    which can carry small unrelated reconciliation gaps of its own (real
+    case: Finnair's ran a few hundred shares off from the broker's own OTTO
+    figure, unrelated to the split itself) that would otherwise pollute the
+    ratio used to rescale every earlier month's valuation.
+    """
+    resets = df[df["TransactionType"].isin(QUANTITY_RESET_TYPES)]
+    pairs = df[df["TransactionType"].isin(KNOWN_NEUTRAL_SPLIT_PAIR_TYPES)]
+
+    ratios: dict[tuple, list[tuple]] = {}
+    for _, reset_row in resets.iterrows():
+        group_key = tuple(reset_row[c] for c in group_cols)
+        split_date = reset_row["_TradeDate"]
+        post_split = abs(reset_row["Quantity"])
+
+        same_event = pairs[
+            (pairs["_TradeDate"] == split_date)
+            & (pairs["Broker"] == reset_row["Broker"])
+            & (pairs["Portfolio"] == reset_row["Portfolio"])
+            & (pairs["NormalizedInstrument"] == reset_row["NormalizedInstrument"])
+        ]
+        if len(same_event) == 0 or post_split <= 0:
+            continue
+
+        pre_split = abs(same_event.iloc[0]["Quantity"])
+        ratio = pre_split / post_split
+        if ratio <= 0:
+            continue
+
+        ratios.setdefault(group_key, []).append((split_date, ratio))
+
+    for key in ratios:
+        ratios[key].sort(key=lambda pair: pair[0])
+
+    return ratios
+
+
+def apply_split_adjustment(active: pd.DataFrame, group_cols: list[str], split_ratios: dict[tuple, list[tuple]]) -> pd.Series:
+    """
+    CumulativeQuantity expressed on the SAME current-share-count basis the
+    fetched price series already uses throughout its history (see
+    compute_split_ratios()) - divides by the compounded ratio of every split
+    that happens AFTER a given row's date, so quantity x price is internally
+    consistent for every historical month, not just months after the most
+    recent split. A row after every applicable split (the common case) gets
+    ratio 1.0, i.e. unchanged.
+    """
+    adjusted = active["CumulativeQuantity"].copy()
+
+    for idx, row in active.iterrows():
+        group_key = tuple(row[c] for c in group_cols)
+        group_splits = split_ratios.get(group_key)
+        if not group_splits:
+            continue
+
+        compounded = 1.0
+        for split_date, ratio in group_splits:
+            if row["_TradeDate"] < split_date:
+                compounded *= ratio
+
+        if compounded != 1.0:
+            adjusted.at[idx] = row["CumulativeQuantity"] / compounded
+
+    return adjusted
+
+
 def build_positions(
     investments_workbook: Path,
     instrument_master: Path = DEFAULT_INSTRUMENT_MASTER,
@@ -446,6 +557,9 @@ def build_positions(
     group_cols = ["Broker", "Portfolio", "NormalizedInstrument"]
     active["QuantityDelta"] = apply_quantity_resets(active, group_cols)
     active["CumulativeQuantity"] = active.groupby(group_cols)["QuantityDelta"].cumsum()
+
+    split_ratios = compute_split_ratios(df, group_cols)
+    active["SplitAdjustedQuantity"] = apply_split_adjustment(active, group_cols, split_ratios)
 
     average_cost_instruments = load_average_cost_instruments(instrument_master)
     active["CashDelta"] = apply_average_cost_basis(active, group_cols, average_cost_instruments)

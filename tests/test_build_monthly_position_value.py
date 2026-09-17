@@ -449,6 +449,58 @@ def test_portfolio_type_blank_when_positions_sheet_predates_the_column(tmp_path)
     assert result.iloc[0]["PortfolioType"] == ""
 
 
+def test_market_value_uses_split_adjusted_quantity_not_real_quantity(tmp_path):
+    """
+    Real bug: a fetched price series is on the CURRENT (post-split) share
+    basis for its entire history, so MarketValueEUR must be computed from
+    SplitAdjustedQuantity, not the real CumulativeQuantity - otherwise a
+    month before a real split overstates value by the split ratio (real
+    case: Norwegian Air Shuttle showed ~40x its real value for one month).
+    CumulativeQuantity as displayed still reports the real quantity.
+    """
+    positions_path = tmp_path / "PortfolioPositions.xlsx"
+    prices_path = tmp_path / "InstrumentPrices.xlsx"
+    fx_path = tmp_path / "FXRates.xlsx"
+
+    _write_sheet(
+        positions_path,
+        "PortfolioPositions",
+        POSITIONS_HEADERS + ["SplitAdjustedQuantity"],
+        [{"Broker": "NORDNET", "Portfolio": "1", "NormalizedInstrument": "FINNAIR", "Date": "2021-03-15", "CumulativeQuantity": 1000, "SplitAdjustedQuantity": 100, "CumulativeNetInvested": -500}],
+    )
+    _prices(prices_path, [
+        {"NormalizedInstrument": "FINNAIR", "Date": "2021-03-31", "Close": 5.0, "Currency": "EUR"},
+    ])
+    _fx(fx_path, [])
+
+    result, _ = build_monthly_values(positions_path, prices_path, fx_path, as_of=date(2021, 4, 5))
+
+    # 100 (split-adjusted) x 5.0 = 500, not 1000 x 5.0 = 5000.
+    assert result.iloc[0]["MarketValueEUR"] == 500.0
+    # The real quantity is still what gets reported/displayed.
+    assert result.iloc[0]["CumulativeQuantity"] == 1000.0
+
+
+def test_market_value_falls_back_to_real_quantity_when_split_adjusted_column_missing(tmp_path):
+    """A PortfolioPositions.xlsx written before SplitAdjustedQuantity existed
+    must not break - falls back to CumulativeQuantity (ratio 1.0)."""
+    positions_path = tmp_path / "PortfolioPositions.xlsx"
+    prices_path = tmp_path / "InstrumentPrices.xlsx"
+    fx_path = tmp_path / "FXRates.xlsx"
+
+    _positions(positions_path, [
+        {"Broker": "NORDNET", "Portfolio": "1", "NormalizedInstrument": "SAMPO A", "Date": "2021-03-15", "CumulativeQuantity": 100, "CumulativeNetInvested": -1000},
+    ])
+    _prices(prices_path, [
+        {"NormalizedInstrument": "SAMPO A", "Date": "2021-03-31", "Close": 12.0, "Currency": "EUR"},
+    ])
+    _fx(fx_path, [])
+
+    result, _ = build_monthly_values(positions_path, prices_path, fx_path, as_of=date(2021, 4, 5))
+
+    assert result.iloc[0]["MarketValueEUR"] == 1200.0
+
+
 def test_instrument_type_carried_through_from_positions(tmp_path):
     """InstrumentType (STOCK/FUND/CRYPTO/...) enables a stocks/funds/cash
     split directly from MonthlyPositionValue.xlsx, without a separate lookup

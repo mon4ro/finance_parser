@@ -118,22 +118,115 @@ def test_build_positions_stock_split_resets_to_absolute_quantity(tmp_path):
     """
     A SPLIT AP JÄTTÖ row's Quantity is the real resulting absolute share
     count, not an incremental delta - confirmed against real Finnair/
-    Norwegian Air Shuttle data. build_positions() must land the cumulative
-    total exactly on that value, not add it on top of the running total.
+    Norwegian Air Shuttle data (numbers here are invented, not the real
+    ones). build_positions() must land the cumulative total exactly on that
+    value, not add it on top of the running total.
     """
     path = tmp_path / "ParsedInvestments.xlsx"
     _write_transactions(path, [
-        {"Broker": "NORDNET", "Portfolio": "1", "NormalizedInstrument": "FINNAIR", "TransactionType": "BUY", "TradeDate": "2021-01-01", "Quantity": 1200, "CashAmount": -750},
-        {"Broker": "NORDNET", "Portfolio": "1", "NormalizedInstrument": "FINNAIR", "TransactionType": "SELL", "TradeDate": "2023-11-03", "Quantity": 400, "CashAmount": 27},
-        {"Broker": "NORDNET", "Portfolio": "1", "NormalizedInstrument": "FINNAIR", "TransactionType": "SPLIT AP JÄTTÖ", "TradeDate": "2024-03-21", "Quantity": 120, "CashAmount": 0},
-        {"Broker": "NORDNET", "Portfolio": "1", "NormalizedInstrument": "FINNAIR", "TransactionType": "SPLIT AP OTTO", "TradeDate": "2024-03-21", "Quantity": 800, "CashAmount": 0},
+        {"Broker": "NORDNET", "Portfolio": "1", "NormalizedInstrument": "FINNAIR", "TransactionType": "BUY", "TradeDate": "2021-01-01", "Quantity": 1000, "CashAmount": -500},
+        {"Broker": "NORDNET", "Portfolio": "1", "NormalizedInstrument": "FINNAIR", "TransactionType": "SELL", "TradeDate": "2023-11-03", "Quantity": 300, "CashAmount": 20},
+        {"Broker": "NORDNET", "Portfolio": "1", "NormalizedInstrument": "FINNAIR", "TransactionType": "SPLIT AP JÄTTÖ", "TradeDate": "2024-03-21", "Quantity": 100, "CashAmount": 0},
+        {"Broker": "NORDNET", "Portfolio": "1", "NormalizedInstrument": "FINNAIR", "TransactionType": "SPLIT AP OTTO", "TradeDate": "2024-03-21", "Quantity": 700, "CashAmount": 0},
     ])
 
     positions, stats = build_positions(path, _no_instrument_master(tmp_path))
 
     rows = positions[positions["NormalizedInstrument"] == "FINNAIR"]
-    assert list(rows["CumulativeQuantity"]) == [1200.0, 800.0, 120.0]
+    assert list(rows["CumulativeQuantity"]) == [1000.0, 700.0, 100.0]
     assert stats["negative_quantity_instruments"] == {}
+
+
+def test_split_ratio_rescales_split_adjusted_quantity_for_prior_dates(tmp_path):
+    """
+    Real bug: a fetched price series (Yahoo) for a stock that later did a
+    reverse split reflects the CURRENT share count for its ENTIRE history,
+    not just from the split date forward - confirmed against real Finnair
+    and Norwegian Air Shuttle data (no price discontinuity at all around the
+    real split date). Multiplying real historical quantity by that
+    already-adjusted price overstates value for any date before the split
+    by exactly the split ratio - real case: one month showed ~40x its real
+    value. SplitAdjustedQuantity must divide the real quantity by the ratio
+    for any row before the split, and leave rows at/after it unchanged.
+    """
+    path = tmp_path / "ParsedInvestments.xlsx"
+    _write_transactions(path, [
+        {"Broker": "NORDNET", "Portfolio": "1", "NormalizedInstrument": "FINNAIR", "TransactionType": "BUY", "TradeDate": "2021-01-01", "Quantity": 1000, "CashAmount": -500},
+        {"Broker": "NORDNET", "Portfolio": "1", "NormalizedInstrument": "FINNAIR", "TransactionType": "SPLIT AP JÄTTÖ", "TradeDate": "2024-03-21", "Quantity": 100, "CashAmount": 0},
+        {"Broker": "NORDNET", "Portfolio": "1", "NormalizedInstrument": "FINNAIR", "TransactionType": "SPLIT AP OTTO", "TradeDate": "2024-03-21", "Quantity": 1000, "CashAmount": 0},
+    ])
+
+    positions, _ = build_positions(path, _no_instrument_master(tmp_path))
+
+    rows = positions[positions["NormalizedInstrument"] == "FINNAIR"]
+    # ratio = 1000 (real pre-split, from the OTTO row) / 100 (post-split) = 10
+    assert list(rows["CumulativeQuantity"]) == [1000.0, 100.0]
+    assert list(rows["SplitAdjustedQuantity"]) == pytest.approx([100.0, 100.0])
+
+
+def test_split_ratio_derived_from_paired_rows_not_running_total(tmp_path):
+    """
+    The ratio must come from the JÄTTÖ/OTTO rows' own raw Quantity, not from
+    whatever CumulativeQuantity happens to be immediately before the reset -
+    real case: Finnair's running total was off by a real, unrelated handful
+    of shares from the broker's own OTTO figure at the time of the split,
+    which must not pollute the ratio used to rescale every earlier month.
+    """
+    path = tmp_path / "ParsedInvestments.xlsx"
+    _write_transactions(path, [
+        {"Broker": "NORDNET", "Portfolio": "1", "NormalizedInstrument": "FINNAIR", "TransactionType": "BUY", "TradeDate": "2021-01-01", "Quantity": 1000, "CashAmount": -500},
+        # An extra +50 the running total picks up but that the OTTO row's own
+        # figure (1000, not 1050) doesn't reflect - simulates the real
+        # unrelated reconciliation gap.
+        {"Broker": "NORDNET", "Portfolio": "1", "NormalizedInstrument": "FINNAIR", "TransactionType": "BUY", "TradeDate": "2021-06-01", "Quantity": 50, "CashAmount": -25},
+        {"Broker": "NORDNET", "Portfolio": "1", "NormalizedInstrument": "FINNAIR", "TransactionType": "SPLIT AP JÄTTÖ", "TradeDate": "2024-03-21", "Quantity": 100, "CashAmount": 0},
+        {"Broker": "NORDNET", "Portfolio": "1", "NormalizedInstrument": "FINNAIR", "TransactionType": "SPLIT AP OTTO", "TradeDate": "2024-03-21", "Quantity": 1000, "CashAmount": 0},
+    ])
+
+    positions, _ = build_positions(path, _no_instrument_master(tmp_path))
+
+    rows = positions[positions["NormalizedInstrument"] == "FINNAIR"]
+    assert list(rows["CumulativeQuantity"]) == [1000.0, 1050.0, 100.0]
+    # Ratio is still 1000/100=10 (from the paired rows), applied to BOTH
+    # pre-split rows uniformly - not derived from 1050.
+    assert list(rows["SplitAdjustedQuantity"]) == pytest.approx([100.0, 105.0, 100.0])
+
+
+def test_no_split_event_leaves_split_adjusted_quantity_unchanged(tmp_path):
+    path = tmp_path / "ParsedInvestments.xlsx"
+    _write_transactions(path, [
+        {"Broker": "NORDNET", "Portfolio": "1", "NormalizedInstrument": "SAMPO A", "TransactionType": "BUY", "TradeDate": "2021-01-01", "Quantity": 100, "CashAmount": -1000},
+    ])
+
+    positions, _ = build_positions(path, _no_instrument_master(tmp_path))
+
+    assert list(positions["SplitAdjustedQuantity"]) == [100.0]
+
+
+def test_finnair_rights_issue_share_delivery_is_counted(tmp_path):
+    """
+    Real bug: MERKINTÄ AP JÄTTÖ (the real share-delivery leg of a rights
+    issue subscription) was previously unhandled - confirmed directly by the
+    user (real quantity trail: buy, sell, then two separate real additions
+    from the same rights issue, reconciling exactly against the broker's own
+    reported pre-split total on the later reverse-split row). The paired
+    MERKINNÄN MAKSU row (same event's payment-only leg, no TotalQuantity
+    change) must stay neutral so the one real event isn't double-counted.
+    """
+    path = tmp_path / "ParsedInvestments.xlsx"
+    _write_transactions(path, [
+        {"Broker": "NORDNET", "Portfolio": "1", "NormalizedInstrument": "FINNAIR", "TransactionType": "BUY", "TradeDate": "2021-01-01", "Quantity": 1000, "CashAmount": -500},
+        {"Broker": "NORDNET", "Portfolio": "1", "NormalizedInstrument": "FINNAIR", "TransactionType": "MERKINNÄN MAKSU", "TradeDate": "2023-11-06", "Quantity": 9000, "CashAmount": -270},
+        {"Broker": "NORDNET", "Portfolio": "1", "NormalizedInstrument": "FINNAIR", "TransactionType": "MERKINTÄ AP JÄTTÖ", "TradeDate": "2023-11-06", "Quantity": 9000, "CashAmount": -270},
+    ])
+
+    positions, stats = build_positions(path, _no_instrument_master(tmp_path))
+
+    rows = positions[positions["NormalizedInstrument"] == "FINNAIR"]
+    assert list(rows["CumulativeQuantity"]) == [1000.0, 10000.0]
+    assert list(rows["CumulativeNetInvested"]) == [-500.0, -770.0]
+    assert "MERKINNÄN MAKSU" not in stats["unhandled_types"]
+    assert "MERKINTÄ AP JÄTTÖ" not in stats["unhandled_types"]
 
 
 def test_build_positions_flags_negative_quantity_as_warning_not_silent(tmp_path):

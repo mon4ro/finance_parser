@@ -92,6 +92,15 @@ def load_portfolio_positions(path: Path) -> pd.DataFrame:
     df["CumulativeQuantity"] = pd.to_numeric(df["CumulativeQuantity"], errors="coerce")
     df["CumulativeNetInvested"] = pd.to_numeric(df["CumulativeNetInvested"], errors="coerce")
 
+    # Falls back to plain CumulativeQuantity (ratio 1.0, i.e. unchanged) for
+    # a PortfolioPositions.xlsx written before this column existed - see
+    # build_portfolio_positions.compute_split_ratios()'s docstring for why
+    # it's needed at all.
+    if "SplitAdjustedQuantity" not in df.columns:
+        df["SplitAdjustedQuantity"] = df["CumulativeQuantity"]
+    df["SplitAdjustedQuantity"] = pd.to_numeric(df["SplitAdjustedQuantity"], errors="coerce")
+    df["SplitAdjustedQuantity"] = df["SplitAdjustedQuantity"].fillna(df["CumulativeQuantity"])
+
     if "PortfolioOwner" not in df.columns:
         df["PortfolioOwner"] = ""
     df["PortfolioOwner"] = df["PortfolioOwner"].map(normalise_text)
@@ -363,7 +372,7 @@ def build_monthly_values(
         candidates = pd.DataFrame({"MonthEnd": months})
         as_of_position = pd.merge_asof(
             candidates,
-            group[["Date", "CumulativeQuantity", "CumulativeNetInvested"]],
+            group[["Date", "CumulativeQuantity", "SplitAdjustedQuantity", "CumulativeNetInvested"]],
             left_on="MonthEnd",
             right_on="Date",
             direction="backward",
@@ -411,8 +420,18 @@ def build_monthly_values(
                 fx_date = fx_match["Date"].iloc[0]
 
             quantity = float(r["CumulativeQuantity"])
+            # The fetched price series is on the CURRENT (latest) share-count
+            # basis for its entire history (see compute_split_ratios() in
+            # build_portfolio_positions.py) - the real historical quantity
+            # would overstate value for any month before a real stock split
+            # by exactly the split ratio, so the value computation uses the
+            # split-adjusted quantity, not the real one. CumulativeQuantity
+            # (real) is still what gets displayed/reported below - the two
+            # deliberately won't multiply out to MarketValueEUR for a
+            # pre-split month, since PriceLocal is also on the adjusted basis.
+            split_adjusted_quantity = float(r["SplitAdjustedQuantity"])
             price_local = float(r["Close"])
-            market_value_eur = round(quantity * price_local * fx_rate, 2)
+            market_value_eur = round(split_adjusted_quantity * price_local * fx_rate, 2)
             net_invested = round(float(r["CumulativeNetInvested"]), 2)
             unrealized_gain_eur = round(market_value_eur + net_invested, 2)
 
