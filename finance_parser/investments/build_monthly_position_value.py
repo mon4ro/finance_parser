@@ -25,11 +25,17 @@ DEFAULT_OUTPUT_WORKBOOK = PROJECT_ROOT / "output" / "investments" / "MonthlyPosi
 MONTHLY_VALUE_SHEET = "MonthlyPositionValue"
 MONTHLY_VALUE_COLUMNS = [
     "MonthEnd", "Year", "Month", "Broker", "Portfolio", "PortfolioOwner", "PortfolioType",
-    "NormalizedInstrument", "InstrumentType", "CumulativeQuantity", "PriceLocal", "InstrumentCurrency",
+    "NormalizedInstrument", "CumulativeQuantity", "PriceLocal", "InstrumentCurrency",
     "PriceDate", "FXRate", "FXDate", "MarketValueEUR",
     "CumulativeNetInvested", "UnrealizedGainEUR", "UnrealizedGainPercent",
     "DividendGrossEUR", "DividendTaxEUR", "DividendNetEUR",
     "CumulativeDividendGrossEUR", "CumulativeDividendNetEUR",
+    # Appended at the end, not inserted mid-list: this project's fresh-rebuild
+    # write pattern means an external workbook (e.g. a hand-built Master
+    # Budget) referencing this file by hardcoded column letter would break if
+    # a new column shifted everything after it - appending only ever adds a
+    # new column, never moves an existing one.
+    "InstrumentType",
 ]
 
 DIVIDEND_EVENT_COLUMNS = ["Broker", "Portfolio", "NormalizedInstrument", "TradeDate", "GrossDividendEUR", "TaxWithheldEUR", "NetDividendEUR"]

@@ -29,13 +29,15 @@ POSITIONS_COLUMNS = [
     "PortfolioOwner",
     "PortfolioType",
     "NormalizedInstrument",
-    "InstrumentType",
     "Date",
     "TransactionType",
     "QuantityDelta",
     "CumulativeQuantity",
     "CashDelta",
     "CumulativeNetInvested",
+    # Appended, not inserted mid-list - see the same note on
+    # MONTHLY_VALUE_COLUMNS in build_monthly_position_value.py.
+    "InstrumentType",
 ]
 
 # Quantity effect classification. Real InvestmentTransactions data (2026-09)
