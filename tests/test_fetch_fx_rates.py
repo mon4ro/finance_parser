@@ -115,11 +115,12 @@ def test_fetch_yahoo_daily_closes_fx_real_network_call(symbol):
     assert len(rows) > 0
     for day, rate in rows:
         # FX trades ~24h/day unlike equities with fixed exchange hours, so a
-        # daily bar can land one UTC calendar day past the requested end
-        # (observed in practice: a bar for the "end" session date was
-        # returned dated end+1) - tolerate that specific slip, not a wider
-        # window.
-        assert start <= day <= end + timedelta(days=1)
+        # daily bar can land one UTC calendar day outside the requested
+        # range on either side (observed in practice: a bar for the "end"
+        # session date returned dated end+1, and separately a bar dated
+        # start-1) - tolerate that specific one-day slip on both ends, not a
+        # wider window.
+        assert start - timedelta(days=1) <= day <= end + timedelta(days=1)
         # A NOK/EUR rate should plausibly be a small positive fraction, not
         # e.g. accidentally inverted (~10-11) or zero.
         assert 0 < rate < 1
