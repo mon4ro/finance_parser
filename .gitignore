@@ -19,6 +19,9 @@ rules/**/*_backup_*.xlsx
 # Historical development log - kept locally, not published
 docs/patch_notes/
 
+# Live task/backlog list - local planning only, not a commit-worthy artifact
+TASKLIST.md
+
 # Excel lock files
 ~$*.xlsx
 ~$*.xlsm
