@@ -130,8 +130,15 @@ def load_rules(rules_path: Path, sheet_name: str) -> list[Rule]:
 
     try:
         df = pd.read_excel(rules_path, sheet_name=sheet_name, dtype=object, engine="openpyxl")
-    except ValueError as exc:
-        raise ValueError(f"Rules workbook is missing required sheet: {sheet_name}") from exc
+    except ValueError:
+        # CategoryRules/OwnershipRules (the only two sheets this is called
+        # for) are deliberately absent from TransactionRules.template.xlsx -
+        # category taxonomy is a personal choice the template intentionally
+        # doesn't prescribe, and OwnershipRules only gets built up as
+        # accounts are configured. A brand-new user's first pipeline run
+        # should just apply zero rules from a not-yet-created sheet, not
+        # crash - this is not a misconfiguration to fail loudly on.
+        return []
 
     df.columns = [normalise_header(c) for c in df.columns]
     rules: list[Rule] = []

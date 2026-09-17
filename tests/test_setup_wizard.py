@@ -1,7 +1,9 @@
 from pathlib import Path
 
+import pandas as pd
 import pytest
 import yaml
+from openpyxl import Workbook
 
 from finance_parser import setup_wizard as wizard
 
@@ -70,26 +72,38 @@ def test_choose_scope_maps_menu_choices(monkeypatch):
 
 
 def test_collect_op_budgeting_settings_builds_filename_prefixes(monkeypatch):
-    # count=2, then label/prefix pairs for each account
+    # count=2, then owner/prefix pairs for each account
     _feed(monkeypatch, ["2", "household", "", "personal", "personb"])
     overrides = {}
 
-    wizard.collect_op_budgeting_settings(overrides)
+    owners = wizard.collect_op_budgeting_settings(overrides)
 
     assert overrides["budgeting"]["source_account_inference"]["OP"]["filename_prefixes"] == {
         "HOUSEHOLD": "HOUSEHOLD",
         "PERSONAL": "PERSONB",
     }
+    assert owners == ["HOUSEHOLD", "PERSONAL"]
+
+
+def test_collect_fixed_account_budgeting_settings_returns_owner(monkeypatch):
+    _feed(monkeypatch, ["personb"])
+    overrides = {}
+
+    owners = wizard.collect_fixed_account_budgeting_settings(overrides, "NORWEGIAN")
+
+    assert overrides["budgeting"]["source_account_inference"]["NORWEGIAN"]["fixed_source_account"] == "PERSONB"
+    assert owners == ["PERSONB"]
 
 
 def test_collect_spankki_settings_maps_buffer_answer_to_default_include(monkeypatch):
     _feed(monkeypatch, [""])  # default Y (buffer account)
     overrides = {}
-    wizard.collect_spankki_settings(overrides)
+    owners = wizard.collect_spankki_settings(overrides)
 
     spankki = overrides["budgeting"]["source_account_inference"]["SPANKKI"]
     assert spankki["fixed_source_account"] == "SPANKKI"
     assert spankki["default_include"] == "NO"
+    assert owners == []  # SPANKKI is an account type, not a person - no Owner to register
 
     _feed(monkeypatch, ["n"])  # not a buffer account
     overrides2 = {}
@@ -182,6 +196,72 @@ def test_write_settings_with_no_overrides_does_not_prompt(tmp_path):
 
     assert written is False
     assert not settings_path.exists()
+
+
+def test_write_ownership_rules_with_no_owners_does_not_prompt(tmp_path):
+    rules_path = tmp_path / "TransactionRules.xlsx"
+
+    written = wizard.write_ownership_rules(rules_path, [])
+
+    assert written is False
+    assert not rules_path.exists()
+
+
+def test_write_ownership_rules_creates_sheet_on_workbook_with_no_ownership_rules_sheet(tmp_path, monkeypatch):
+    """
+    A brand-new TransactionRules.xlsx copied from the template has no
+    OwnershipRules sheet at all - the wizard must create it fresh, not
+    error out.
+    """
+    rules_path = tmp_path / "TransactionRules.xlsx"
+    wb = Workbook()
+    ws = wb.active
+    ws.title = "TransactionRules"
+    ws.append(["RuleID", "Enabled"])
+    ws.append(["BR0001", "YES"])
+    wb.save(rules_path)
+
+    _feed(monkeypatch, ["y"])
+    written = wizard.write_ownership_rules(rules_path, ["HOUSEHOLD"])
+
+    assert written is True
+    df = pd.read_excel(rules_path, sheet_name="OwnershipRules", dtype=object)
+    assert list(df["RuleID"]) == ["OR0001"]
+    assert df.iloc[0]["Pattern"] == "HOUSEHOLD"
+    assert df.iloc[0]["SetOwner"] == "HOUSEHOLD"
+    assert df.iloc[0]["MatchField"] == "SourceAccount"
+
+    # The pre-existing TransactionRules sheet must survive untouched.
+    other = pd.read_excel(rules_path, sheet_name="TransactionRules", dtype=object)
+    assert list(other["RuleID"]) == ["BR0001"]
+
+
+def test_write_ownership_rules_skips_already_covered_owners_and_continues_numbering(tmp_path, monkeypatch):
+    rules_path = tmp_path / "TransactionRules.xlsx"
+    wb = Workbook()
+    ws = wb.active
+    ws.title = "OwnershipRules"
+    ws.append(wizard.OWNERSHIP_RULES_COLUMNS)
+    ws.append(["OR0001", "YES", 100, "Source account PERSONA owns transaction", "SourceAccount", "EXACT", "PERSONA", "NO", "PERSONA", "NO", "YES", "BLANK_ONLY", "Notes"])
+    wb.save(rules_path)
+
+    _feed(monkeypatch, ["y"])
+    written = wizard.write_ownership_rules(rules_path, ["PERSONA", "PERSONB"])
+
+    assert written is True
+    df = pd.read_excel(rules_path, sheet_name="OwnershipRules", dtype=object)
+    assert list(df["RuleID"]) == ["OR0001", "OR0002"]
+    assert list(df["Pattern"]) == ["PERSONA", "PERSONB"]
+
+
+def test_write_ownership_rules_does_not_write_when_user_declines(tmp_path, monkeypatch):
+    rules_path = tmp_path / "TransactionRules.xlsx"
+    _feed(monkeypatch, ["n"])
+
+    written = wizard.write_ownership_rules(rules_path, ["HOUSEHOLD"])
+
+    assert written is False
+    assert not rules_path.exists()
 
 
 def test_cli_has_dry_run_and_keep_temp():

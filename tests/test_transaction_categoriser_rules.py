@@ -5,6 +5,7 @@ from openpyxl import Workbook
 from finance_parser.budgeting.transaction_categoriser import (
     Rule,
     categorise_workbook,
+    load_rules,
     rule_matches,
     value_matches,
 )
@@ -126,3 +127,22 @@ def test_categorise_only_changes_unified_rows_with_blank_comments(tmp_path):
 
     assert "ChangeLog" in wb.sheetnames
     wb.close()
+
+
+def test_load_rules_returns_empty_list_for_missing_sheet_not_a_crash(tmp_path):
+    """
+    TransactionRules.template.xlsx deliberately ships with no CategoryRules
+    or OwnershipRules sheet at all (category taxonomy is a personal choice
+    the template intentionally doesn't prescribe) - a brand-new user's first
+    pipeline run must apply zero rules from a not-yet-created sheet, not
+    crash with a missing-sheet error.
+    """
+    path = tmp_path / "TransactionRules.xlsx"
+    wb = Workbook()
+    ws = wb.active
+    ws.title = "SomeOtherSheet"
+    ws.append(["A"])
+    wb.save(path)
+
+    assert load_rules(path, "CategoryRules") == []
+    assert load_rules(path, "OwnershipRules") == []

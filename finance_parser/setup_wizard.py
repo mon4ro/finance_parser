@@ -6,11 +6,19 @@ import tempfile
 from pathlib import Path
 from typing import Any
 
+import pandas as pd
 import yaml
 
 from finance_parser.budgeting.transaction_parser import SUPPORTED_PARSERS as BUDGETING_PARSER_MODULES
 from finance_parser.investments.investment_parser import SUPPORTED_INVESTMENT_PARSERS as INVESTMENT_PARSER_MODULES
 from finance_parser.settings import _deep_merge
+from finance_parser.utilities.fresh_workbook_writer import (
+    read_workbook_values_only,
+    records_to_sheet_values,
+    replace_with_fresh_workbook,
+    sheet_values_to_records,
+    write_fresh_workbook,
+)
 
 
 PROJECT_ROOT = Path(__file__).resolve().parents[1]
@@ -29,6 +37,19 @@ CASH_SOURCE_BANK = "CASH"
 # DividendHistory.xlsx) - runs automatically once the investment pipeline
 # has produced that file, never something a user manually opts into here.
 SYNTHETIC_BUDGETING_SOURCE_BANKS = {"INVESTMENT_DIVIDEND"}
+
+# TransactionRules.template.xlsx deliberately ships with no OwnershipRules
+# sheet at all (see its own README sheet) - it's built up as accounts get
+# configured, not prescribed upfront. transaction_categoriser.py already
+# treats a missing sheet as "zero rules" rather than an error, so creating
+# it fresh here (matching the real schema below) is safe on a brand-new
+# workbook, not just an existing one.
+OWNERSHIP_RULES_SHEET = "OwnershipRules"
+OWNERSHIP_RULES_COLUMNS = [
+    "RuleID", "Enabled", "Priority", "RuleName", "MatchField", "MatchType",
+    "Pattern", "CaseSensitive", "SetOwner", "ClearOwner", "StopIfMatched",
+    "OverwriteMode", "Notes",
+]
 
 
 def budgeting_broker_names() -> list[str]:
@@ -102,10 +123,19 @@ def _set_nested(target: dict[str, Any], path: list[str], value: Any) -> None:
     node[path[-1]] = value
 
 
-def collect_op_budgeting_settings(overrides: dict[str, Any]) -> None:
+def _explain_account_owner(broker: str) -> None:
     print()
-    print("OP (budgeting): each OP export file is matched to an account/owner by a prefix in")
-    print("its filename, e.g. HOUSEHOLD_tapahtumat20260503-20260603.csv -> HOUSEHOLD.")
+    print(f"{broker}: who is the Owner of this account - the household member it belongs to?")
+    print("This is just a starting default for the account as a whole. It's separate from")
+    print("which household member an individual transaction ends up attributed to for")
+    print("budgeting purposes later - that can still be set independently, per transaction,")
+    print("regardless of the account's owner.")
+
+
+def collect_op_budgeting_settings(overrides: dict[str, Any]) -> list[str]:
+    _explain_account_owner("OP")
+    print("Each OP export file is matched to an account by a prefix in its filename, e.g.")
+    print("HOUSEHOLD_tapahtumat20260503-20260603.csv -> HOUSEHOLD.")
     count_raw = ask("How many separate OP export accounts do you have", default="1")
     try:
         count = max(1, int(count_raw))
@@ -113,24 +143,31 @@ def collect_op_budgeting_settings(overrides: dict[str, Any]) -> None:
         count = 1
 
     prefixes: dict[str, str] = {}
+    owners: list[str] = []
     for i in range(count):
-        label = ask(f"  Account #{i + 1} label (e.g. HOUSEHOLD, PERSONAL, CHILD)")
-        if not label:
+        owner = ask(f"  Account #{i + 1} Owner (e.g. HOUSEHOLD, PERSONAL, CHILD)")
+        if not owner:
             continue
-        prefix = ask(f"  Filename prefix for '{label.upper()}'", default=label.upper())
-        prefixes[label.upper()] = prefix.upper()
+        prefix = ask(f"  Filename prefix for '{owner.upper()}'", default=owner.upper())
+        prefixes[owner.upper()] = prefix.upper()
+        owners.append(owner.upper())
 
     if prefixes:
         _set_nested(overrides, ["budgeting", "source_account_inference", "OP", "filename_prefixes"], prefixes)
 
-
-def collect_fixed_account_budgeting_settings(overrides: dict[str, Any], broker: str) -> None:
-    label = ask(f"{broker}: account/owner label for these transactions", default=broker)
-    if label:
-        _set_nested(overrides, ["budgeting", "source_account_inference", broker, "fixed_source_account"], label.upper())
+    return owners
 
 
-def collect_spankki_settings(overrides: dict[str, Any]) -> None:
+def collect_fixed_account_budgeting_settings(overrides: dict[str, Any], broker: str) -> list[str]:
+    _explain_account_owner(broker)
+    owner = ask(f"{broker}: Owner", default=broker)
+    if not owner:
+        return []
+    _set_nested(overrides, ["budgeting", "source_account_inference", broker, "fixed_source_account"], owner.upper())
+    return [owner.upper()]
+
+
+def collect_spankki_settings(overrides: dict[str, Any]) -> list[str]:
     print()
     print("S-Pankki (budgeting): often used as a buffer/pass-through account (e.g. a shared")
     print("grocery account topped up from a joint account) whose own balance is reconciled")
@@ -146,6 +183,9 @@ def collect_spankki_settings(overrides: dict[str, Any]) -> None:
         ["budgeting", "source_account_inference", "SPANKKI", "default_include"],
         "NO" if is_buffer else "YES",
     )
+    # SPANKKI is the account-type name, not a household member - no Owner to
+    # register in OwnershipRules here (unlike OP/Norwegian/Nordea above).
+    return []
 
 
 BUDGETING_SETTINGS_HANDLERS = {
@@ -214,6 +254,112 @@ def collect_unsupported(prompt: str) -> list[str]:
     if not raw:
         return []
     return [part.strip() for part in raw.split(",") if part.strip()]
+
+
+def _existing_ownership_patterns(rules_path: Path) -> set[str]:
+    if not rules_path.exists():
+        return set()
+    try:
+        df = pd.read_excel(rules_path, sheet_name=OWNERSHIP_RULES_SHEET, dtype=object, engine="openpyxl")
+    except ValueError:
+        return set()
+    if "Pattern" not in df.columns or "MatchField" not in df.columns:
+        return set()
+    matched = df[df["MatchField"].astype(str).str.strip().str.upper() == "SOURCEACCOUNT"]
+    return {str(p).strip().upper() for p in matched["Pattern"].dropna()}
+
+
+def _next_ownership_rule_number(rules_path: Path) -> int:
+    if not rules_path.exists():
+        return 1
+    try:
+        df = pd.read_excel(rules_path, sheet_name=OWNERSHIP_RULES_SHEET, dtype=object, engine="openpyxl")
+    except ValueError:
+        return 1
+    numbers = []
+    for raw in df.get("RuleID", []):
+        text = str(raw).strip().upper()
+        if text.startswith("OR") and text[2:].isdigit():
+            numbers.append(int(text[2:]))
+    return (max(numbers) + 1) if numbers else 1
+
+
+def _build_ownership_rule_row(rule_number: int, owner: str) -> dict[str, Any]:
+    return {
+        "RuleID": f"OR{rule_number:04d}",
+        "Enabled": "YES",
+        "Priority": 100,
+        "RuleName": f"Source account {owner} owns transaction",
+        "MatchField": "SourceAccount",
+        "MatchType": "EXACT",
+        "Pattern": owner,
+        "CaseSensitive": "NO",
+        "SetOwner": owner,
+        "ClearOwner": "NO",
+        "StopIfMatched": "YES",
+        "OverwriteMode": "BLANK_ONLY",
+        "Notes": "Default owner from source account (added by setup_wizard.py).",
+    }
+
+
+def write_ownership_rules(rules_path: Path, owners: list[str]) -> bool:
+    """
+    Appends one OwnershipRules row per not-yet-covered Owner, so the
+    transaction-level Owner field actually gets populated from the first
+    pipeline run - not just SourceAccount in config/settings.yaml. Never
+    touches any other sheet in the workbook; creates OwnershipRules itself,
+    with the real schema, if the workbook doesn't have it yet (a brand-new
+    TransactionRules.xlsx copied from the template won't). Same
+    show-then-confirm pattern as write_settings() - and the same backup
+    safety net via replace_with_fresh_workbook().
+    """
+    covered = _existing_ownership_patterns(rules_path)
+    seen: set[str] = set()
+    next_number = _next_ownership_rule_number(rules_path)
+
+    to_add: list[dict[str, Any]] = []
+    for owner in owners:
+        key = owner.strip().upper()
+        if not key or key in covered or key in seen:
+            continue
+        seen.add(key)
+        to_add.append(_build_ownership_rule_row(next_number, key))
+        next_number += 1
+
+    if not to_add:
+        return False
+
+    print()
+    print(f"About to add {len(to_add)} OwnershipRules row(s) to {rules_path.name} - without these, these")
+    print("accounts' transactions would have no Owner set on the first pipeline run:")
+    for row in to_add:
+        print(f"  - {row['RuleID']}: SourceAccount = {row['Pattern']}  ->  Owner = {row['SetOwner']}")
+
+    if not ask_yes_no(f"Add these rows to {rules_path.name}?", default=True):
+        print("Not written - nothing changed.")
+        return False
+
+    sheets = read_workbook_values_only(rules_path) if rules_path.exists() else {}
+
+    existing_records: list[dict[str, Any]] = []
+    if OWNERSHIP_RULES_SHEET in sheets:
+        _, existing_records = sheet_values_to_records(sheets[OWNERSHIP_RULES_SHEET])
+
+    sheets[OWNERSHIP_RULES_SHEET] = records_to_sheet_values(OWNERSHIP_RULES_COLUMNS, existing_records + to_add)
+
+    if rules_path.exists():
+        replace_with_fresh_workbook(
+            rules_path,
+            sheets,
+            backup_label="before_setup_wizard_ownership_rules",
+            basic_formatting=True,
+            excel_tables=False,
+        )
+    else:
+        write_fresh_workbook(rules_path, sheets, basic_formatting=True, excel_tables=False)
+
+    print(f"Written: {rules_path}")
+    return True
 
 
 def offer_template_copy(
@@ -304,6 +450,7 @@ def run_wizard(
     scope = choose_scope()
     overrides: dict[str, Any] = {}
     unsupported: list[str] = []
+    account_owners: list[str] = []
 
     if "budgeting" in scope:
         print()
@@ -312,7 +459,7 @@ def run_wizard(
         for broker in chosen:
             handler = BUDGETING_SETTINGS_HANDLERS.get(broker)
             if handler:
-                handler(overrides)
+                account_owners.extend(handler(overrides) or [])
 
         print()
         use_cash = ask_yes_no(
@@ -351,6 +498,7 @@ def run_wizard(
         investment_rules=investment_rules,
     )
     write_settings(overrides, settings_path=settings_path)
+    write_ownership_rules(budgeting_rules, account_owners)
 
     print()
     print("Setup wizard dry run complete." if dry_run else "Setup wizard complete.")
