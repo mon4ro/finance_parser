@@ -34,6 +34,7 @@ DEFAULT_OUTPUT_WORKBOOK = PROJECT_ROOT / "output" / "investments" / "LookThrough
 
 DETAIL_SHEET = "LookThroughDetail"
 SUMMARY_SHEET = "LookThroughByCompany"
+FUND_COVERAGE_SHEET = "FundCoverage"
 
 # Per-source-instrument breakdown, before aggregation - e.g. how much of the
 # total Nokia exposure came from direct stock vs from OP-Suomi A specifically.
@@ -50,6 +51,14 @@ DETAIL_COLUMNS = [
 
 # One row per real-world company/holding, combining direct + indirect exposure.
 SUMMARY_COLUMNS = ["SnapshotMonth", "HoldingKey", "HoldingName", "ExposureEUR", "ExposurePercent"]
+
+# One row per currently-held fund: how much of IT could actually be mapped to
+# a named holding vs left as an UNKNOWN residual (top-10 cutoff, a
+# fund-of-funds Yahoo can't see into, or no data at all). Answers "which of
+# my funds are poorly covered" directly, without having to notice it inside
+# the (necessarily much larger, and per-fund-scoped) LookThroughByCompany
+# UNKNOWN rows.
+FUND_COVERAGE_COLUMNS = ["SnapshotMonth", "NormalizedInstrument", "KnownPercent", "UnknownPercent"]
 
 
 def _month_key(value: object) -> str:
@@ -140,7 +149,7 @@ def build_look_through_exposure(
     holdings_workbook: Path,
     *,
     as_of_month: str | None = None,
-) -> tuple[pd.DataFrame, pd.DataFrame, dict[str, object]]:
+) -> tuple[pd.DataFrame, pd.DataFrame, pd.DataFrame, dict[str, object]]:
     target_month, positions = load_position_values(monthly_value_workbook, as_of_month)
 
     master = load_instrument_master(instrument_master_path)
@@ -158,6 +167,7 @@ def build_look_through_exposure(
     }
 
     detail_rows: list[dict[str, object]] = []
+    fund_coverage_rows: list[dict[str, object]] = []
 
     for _, row in positions.iterrows():
         instrument = row["NormalizedInstrument"]
@@ -181,10 +191,28 @@ def build_look_through_exposure(
             else:
                 rows_for_month = _nearest_snapshot_rows(fund_snapshots, target_month)
 
+            unknown_percent = 0.0
             for _, holding_row in rows_for_month.iterrows():
                 percent = float(holding_row["HoldingPercent"])
-                key = normalise_text(holding_row.get("HoldingSymbol", "")) or UNKNOWN_SYMBOL
-                name = normalise_text(holding_row.get("HoldingName", "")) or key
+                raw_key = normalise_text(holding_row.get("HoldingSymbol", "")) or UNKNOWN_SYMBOL
+                raw_name = normalise_text(holding_row.get("HoldingName", "")) or raw_key
+
+                if raw_key == UNKNOWN_SYMBOL:
+                    # Scope the UNKNOWN bucket to its source fund rather than
+                    # sharing one global "UNKNOWN" key across every fund -
+                    # otherwise a fund with literally zero holdings data
+                    # (e.g. a real one this project has seen: Yahoo returns
+                    # nothing for it at all) looks identical to a
+                    # well-covered fund's ordinary top-10 cutoff tail, once
+                    # merged into a single bucket in the summary. See also
+                    # the FundCoverage sheet, which reports this per fund
+                    # directly.
+                    key = f"UNKNOWN:{instrument}"
+                    name = f"Unknown / unmapped ({instrument})"
+                    unknown_percent += percent
+                else:
+                    key, name = raw_key, raw_name
+
                 detail_rows.append({
                     "SnapshotMonth": target_month,
                     "SourceInstrument": instrument,
@@ -195,6 +223,13 @@ def build_look_through_exposure(
                     "HoldingPercent": percent,
                     "ExposureEUR": round(value * percent / 100.0, 2),
                 })
+
+            fund_coverage_rows.append({
+                "SnapshotMonth": target_month,
+                "NormalizedInstrument": instrument,
+                "KnownPercent": round(100.0 - unknown_percent, 4),
+                "UnknownPercent": round(unknown_percent, 4),
+            })
         else:
             key, name = _direct_holding_key(instrument, master_row)
             detail_rows.append({
@@ -220,10 +255,18 @@ def build_look_through_exposure(
     summary = summary.sort_values("ExposureEUR", ascending=False).reset_index(drop=True)
     summary = summary[SUMMARY_COLUMNS]
 
-    return detail, summary, stats
+    fund_coverage = pd.DataFrame(fund_coverage_rows, columns=FUND_COVERAGE_COLUMNS)
+    fund_coverage = fund_coverage.sort_values("UnknownPercent", ascending=False).reset_index(drop=True)
+
+    return detail, summary, fund_coverage, stats
 
 
-def write_look_through_workbook(output_workbook: Path, detail: pd.DataFrame, summary: pd.DataFrame) -> None:
+def write_look_through_workbook(
+    output_workbook: Path,
+    detail: pd.DataFrame,
+    summary: pd.DataFrame,
+    fund_coverage: pd.DataFrame,
+) -> None:
     if output_workbook.exists():
         sheets = read_workbook_values_only(output_workbook)
     else:
@@ -231,6 +274,7 @@ def write_look_through_workbook(output_workbook: Path, detail: pd.DataFrame, sum
 
     sheets[SUMMARY_SHEET] = records_to_sheet_values(SUMMARY_COLUMNS, summary.to_dict("records"))
     sheets[DETAIL_SHEET] = records_to_sheet_values(DETAIL_COLUMNS, detail.to_dict("records"))
+    sheets[FUND_COVERAGE_SHEET] = records_to_sheet_values(FUND_COVERAGE_COLUMNS, fund_coverage.to_dict("records"))
 
     if output_workbook.exists():
         replace_with_fresh_workbook(
@@ -274,7 +318,7 @@ def main() -> None:
     holdings_workbook = Path(args.holdings_workbook).expanduser().resolve()
     output_workbook = Path(args.output_workbook).expanduser().resolve()
 
-    detail, summary, stats = build_look_through_exposure(
+    detail, summary, fund_coverage, stats = build_look_through_exposure(
         instrument_master_path,
         monthly_value_workbook,
         holdings_workbook,
@@ -305,12 +349,18 @@ def main() -> None:
     for _, row in summary.head(10).iterrows():
         print(f"  {row['HoldingName']:<40} {row['ExposureEUR']:>12.2f} EUR  ({row['ExposurePercent']:.2f}%)")
 
+    if len(fund_coverage) > 0:
+        print()
+        print("Fund coverage (share of each fund's own value that could NOT be mapped to a named holding):")
+        for _, row in fund_coverage.iterrows():
+            print(f"  {row['NormalizedInstrument']:<30} {row['UnknownPercent']:>7.2f}% unknown")
+
     if args.dry_run:
         print()
         print("Dry run only: workbook was not modified.")
         return
 
-    write_look_through_workbook(output_workbook, detail, summary)
+    write_look_through_workbook(output_workbook, detail, summary, fund_coverage)
     print()
     print(f"Output workbook: {output_workbook}")
 
