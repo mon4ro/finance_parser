@@ -117,7 +117,7 @@ def collect_op_budgeting_settings(overrides: dict[str, Any]) -> None:
         label = ask(f"  Account #{i + 1} label (e.g. HOUSEHOLD, PERSONAL, CHILD)")
         if not label:
             continue
-        prefix = ask(f"  Filename prefix for '{label.upper()}'", default=label)
+        prefix = ask(f"  Filename prefix for '{label.upper()}'", default=label.upper())
         prefixes[label.upper()] = prefix.upper()
 
     if prefixes:
