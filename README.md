@@ -4,6 +4,39 @@ A modular personal finance parser for bank transactions and investment transacti
 
 The project keeps parsing, normalisation, categorisation, and local manual editing concerns separate.
 
+## Getting started
+
+For a brand-new setup, in order:
+
+1. **Configure** - run the setup wizard once (see [Setup](#setup) below) to generate
+   `config/settings.yaml`. It asks whether you're using budgeting, investments, or
+   both, and only asks about the banks/brokers relevant to what you choose.
+2. **Add your export files** to whichever of these apply to you:
+   ```text
+   input/budgeting/      (bank exports: OP, Nordea, Norwegian, S-Pankki, ...)
+   input/investments/    (broker exports: Nordnet, EVLI, OP, Nordea, Seligson, Coinmotion)
+   ```
+3. **Run the pipeline(s)** you configured - `--dry-run` first is recommended:
+   ```bash
+   python run_budgeting_pipeline.py --dry-run
+   python run_investment_pipeline.py --dry-run
+   ```
+
+**Are the two pipelines dependent on each other? No.** Each runs standalone - neither
+requires the other to have been run first, and you can use this project for budgeting
+only, investments only, or both:
+
+- Budgeting alone works fully - its two dividend-income stages just auto-skip (with a
+  message) if `DividendHistory.xlsx` (an investment-side output) doesn't exist yet.
+- Investments alone works fully - its optional local-currency dividend enrichment just
+  leaves those columns blank if the budgeting workbook doesn't exist.
+
+**If you're setting up both**, there's no strict ordering requirement, but running the
+investment pipeline first means budgeting's dividend-income rows show up correctly on
+its very first run, instead of needing a second budgeting run later once
+`DividendHistory.xlsx` exists. Either order is safe and correct - it only affects how
+complete the very first run is, not whether anything breaks.
+
 ## Setup
 
 Run the interactive setup wizard to generate `config/settings.yaml` without hand-editing
