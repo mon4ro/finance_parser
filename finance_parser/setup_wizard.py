@@ -206,6 +206,15 @@ def collect_portfolio_owners(overrides: dict[str, Any], broker: str) -> None:
             _set_nested(overrides, ["investments", "portfolio_owners", broker], owner.upper())
         return
 
+    print()
+    print(f"One {broker} login can hold several separate portfolios (e.g. one per household")
+    print("member) - each needs its own owner. You'll be asked for a portfolio number/id")
+    print(f"(check your {broker} export or account overview for this) and who it belongs to,")
+    print("one pair at a time. Press Enter on a blank portfolio number/id when you're done")
+    print("listing them - you'll then be asked for one last fallback owner, used only if a")
+    print("transaction ever shows up from a portfolio you didn't list (e.g. a new account")
+    print("opened later), so nothing silently ends up with no owner at all.")
+
     owners: dict[str, str] = {}
     while True:
         portfolio = ask("  Portfolio number/id (blank to finish)")
@@ -214,7 +223,7 @@ def collect_portfolio_owners(overrides: dict[str, Any], broker: str) -> None:
         owner = ask(f"  Who does portfolio {portfolio} belong to?", default="HOUSEHOLD")
         owners[portfolio] = owner.upper()
 
-    default_owner = ask(f"{broker}: default owner for any other, unlisted portfolio", default="HOUSEHOLD")
+    default_owner = ask(f"{broker}: fallback owner for any other, unlisted portfolio", default="HOUSEHOLD")
     if default_owner:
         owners["default"] = default_owner.upper()
 
