@@ -196,14 +196,70 @@ BUDGETING_SETTINGS_HANDLERS = {
 }
 
 
-def collect_portfolio_owners(overrides: dict[str, Any], broker: str) -> None:
+# Brokers where the account-wrapper type is a genuine AOT (Arvo-osuustili -
+# regular custody/investment account) vs OST (Osakesäästötili - equity
+# savings account) choice. EVLI is an employer share-plan account (neither),
+# and COINMOTION/SELIGSON have a single known fixed type - see
+# FIXED_PORTFOLIO_TYPES below - so none of those three get asked.
+AOT_OST_CAPABLE_BROKERS = {"OP", "NORDEA", "NORDNET"}
+PORTFOLIO_TYPE_CHOICES = {"1": "Arvo-osuustili", "2": "Osakesäästötili"}
+
+# Account-wrapper type is a known, fixed technical fact for these brokers,
+# not a personal choice and not an AOT/OST distinction - auto-filled rather
+# than asked.
+FIXED_PORTFOLIO_TYPES = {
+    "COINMOTION": "Crypto wallet",
+    "SELIGSON": "Arvo-osuustili",  # direct fund purchase only, always custody-type
+}
+
+
+def ask_portfolio_type(context: str) -> str:
+    print(f"{context} account type:")
+    print("  1. AOT - Arvo-osuustili (regular custody/investment account)")
+    print("  2. OST - Osakesäästötili (equity savings account)")
+    choice = ask("Choice (blank to skip)")
+    return PORTFOLIO_TYPE_CHOICES.get(choice.strip(), "")
+
+
+def _existing_broker_value(existing: dict[str, Any], section: str, broker: str) -> Any:
+    return (existing.get("investments", {}) or {}).get(section, {}).get(broker)
+
+
+def collect_portfolio_owners(overrides: dict[str, Any], broker: str, existing: dict[str, Any] | None = None) -> None:
+    existing = existing or {}
+    existing_owners = _existing_broker_value(existing, "portfolio_owners", broker)
+    existing_types = _existing_broker_value(existing, "portfolio_types", broker)
+    existing_is_multi = isinstance(existing_owners, dict) or isinstance(existing_types, dict)
+
     print()
-    multiple = ask_yes_no(f"{broker}: do you have more than one portfolio/account under this broker?", default=False)
+    if existing_is_multi:
+        print(f"{broker}: your current settings already have multiple portfolios configured:")
+        if isinstance(existing_owners, dict):
+            for portfolio_id, owner in existing_owners.items():
+                print(f"  - {portfolio_id}: {owner}")
+
+    multiple = ask_yes_no(
+        f"{broker}: do you have more than one portfolio/account under this broker?",
+        default=existing_is_multi,
+    )
 
     if not multiple:
+        if existing_is_multi:
+            print()
+            print(f"WARNING: answering with a single owner here will REPLACE your existing")
+            print(f"per-portfolio configuration for {broker} above with one flat value.")
+            if not ask_yes_no("Are you sure you want to replace it?", default=False):
+                print("Keeping your existing per-portfolio configuration unchanged.")
+                return
+
         owner = ask(f"{broker}: who does this portfolio belong to?", default="HOUSEHOLD")
         if owner:
             _set_nested(overrides, ["investments", "portfolio_owners", broker], owner.upper())
+
+        if broker in AOT_OST_CAPABLE_BROKERS:
+            portfolio_type = ask_portfolio_type(broker)
+            if portfolio_type:
+                _set_nested(overrides, ["investments", "portfolio_types", broker], portfolio_type)
         return
 
     print()
@@ -216,6 +272,7 @@ def collect_portfolio_owners(overrides: dict[str, Any], broker: str) -> None:
     print("opened later), so nothing silently ends up with no owner at all.")
 
     owners: dict[str, str] = {}
+    types: dict[str, str] = {}
     while True:
         portfolio = ask("  Portfolio number/id (blank to finish)")
         if not portfolio:
@@ -223,12 +280,19 @@ def collect_portfolio_owners(overrides: dict[str, Any], broker: str) -> None:
         owner = ask(f"  Who does portfolio {portfolio} belong to?", default="HOUSEHOLD")
         owners[portfolio] = owner.upper()
 
+        if broker in AOT_OST_CAPABLE_BROKERS:
+            portfolio_type = ask_portfolio_type(f"  Portfolio {portfolio}")
+            if portfolio_type:
+                types[portfolio] = portfolio_type
+
     default_owner = ask(f"{broker}: fallback owner for any other, unlisted portfolio", default="HOUSEHOLD")
     if default_owner:
         owners["default"] = default_owner.upper()
 
     if owners:
         _set_nested(overrides, ["investments", "portfolio_owners", broker], owners)
+    if types:
+        _set_nested(overrides, ["investments", "portfolio_types", broker], types)
 
 
 def collect_fixed_instrument_name(overrides: dict[str, Any], broker: str, hint: str) -> None:
@@ -239,7 +303,7 @@ def collect_fixed_instrument_name(overrides: dict[str, Any], broker: str, hint: 
         _set_nested(overrides, ["investments", "broker_defaults", broker, "fixed_instrument_name"], name.upper())
 
 
-def collect_investment_broker_settings(overrides: dict[str, Any], broker: str) -> None:
+def collect_investment_broker_settings(overrides: dict[str, Any], broker: str, existing: dict[str, Any] | None = None) -> None:
     if broker == "EVLI":
         collect_fixed_instrument_name(
             overrides,
@@ -254,7 +318,10 @@ def collect_investment_broker_settings(overrides: dict[str, Any], broker: str) -
             "Nordea's own Excel export has no instrument/fund name column at all - one custody "
             "account here holds one fund, so the name has to come from settings.",
         )
-    collect_portfolio_owners(overrides, broker)
+    collect_portfolio_owners(overrides, broker, existing)
+
+    if broker in FIXED_PORTFOLIO_TYPES:
+        _set_nested(overrides, ["investments", "portfolio_types", broker], FIXED_PORTFOLIO_TYPES[broker])
 
 
 def collect_unsupported(prompt: str) -> list[str]:
@@ -398,6 +465,13 @@ def offer_template_copy(
     return copied
 
 
+def load_existing_raw_settings(settings_path: Path) -> dict[str, Any]:
+    if not settings_path.exists():
+        return {}
+    with settings_path.open("r", encoding="utf-8") as handle:
+        return yaml.safe_load(handle) or {}
+
+
 def write_settings(overrides: dict[str, Any], settings_path: Path = DEFAULT_SETTINGS_PATH) -> bool:
     """
     Never blindly overwrites an existing config/settings.yaml - deep-merges
@@ -412,11 +486,7 @@ def write_settings(overrides: dict[str, Any], settings_path: Path = DEFAULT_SETT
         print("No settings collected - nothing to write.")
         return False
 
-    existing: dict[str, Any] = {}
-    if settings_path.exists():
-        with settings_path.open("r", encoding="utf-8") as handle:
-            existing = yaml.safe_load(handle) or {}
-
+    existing = load_existing_raw_settings(settings_path)
     merged = _deep_merge(existing, overrides)
 
     print()
@@ -456,6 +526,8 @@ def run_wizard(
         print("This helps you configure config/settings.yaml for your own banks/brokers.")
         print("Nothing is written until you confirm at the end.")
 
+    existing_settings = load_existing_raw_settings(settings_path)
+
     scope = choose_scope()
     overrides: dict[str, Any] = {}
     unsupported: list[str] = []
@@ -488,7 +560,7 @@ def run_wizard(
         print("Investment brokers supported today:")
         chosen = ask_multi_select(investment_broker_names())
         for broker in chosen:
-            collect_investment_broker_settings(overrides, broker)
+            collect_investment_broker_settings(overrides, broker, existing_settings)
 
         unsupported.extend(
             collect_unsupported("Any other brokers you use that weren't listed? (comma-separated, blank to skip)")

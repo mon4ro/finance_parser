@@ -120,7 +120,8 @@ def test_collect_portfolio_owners_single_portfolio(monkeypatch):
 
 
 def test_collect_portfolio_owners_multiple_portfolios(monkeypatch):
-    _feed(monkeypatch, ["y", "10000001", "personal", "", "household"])
+    # NORDNET is AOT/OST-capable, so each portfolio also gets an account-type prompt.
+    _feed(monkeypatch, ["y", "10000001", "personal", "1", "", "household"])
     overrides = {}
     wizard.collect_portfolio_owners(overrides, "NORDNET")
 
@@ -128,6 +129,70 @@ def test_collect_portfolio_owners_multiple_portfolios(monkeypatch):
         "10000001": "PERSONAL",
         "default": "HOUSEHOLD",
     }
+    assert overrides["investments"]["portfolio_types"]["NORDNET"] == {
+        "10000001": "Arvo-osuustili",
+    }
+
+
+def test_collect_portfolio_owners_asks_account_type_for_aot_ost_capable_broker(monkeypatch):
+    _feed(monkeypatch, ["n", "personal", "2"])
+    overrides = {}
+    wizard.collect_portfolio_owners(overrides, "OP")
+
+    assert overrides["investments"]["portfolio_owners"]["OP"] == "PERSONAL"
+    assert overrides["investments"]["portfolio_types"]["OP"] == "Osakesäästötili"
+
+
+def test_collect_portfolio_owners_does_not_ask_account_type_for_evli(monkeypatch):
+    # Only "n" (not multiple) and an owner - no account-type prompt for EVLI,
+    # so there must be nothing left over to consume.
+    _feed(monkeypatch, ["n", "personal"])
+    overrides = {}
+
+    wizard.collect_portfolio_owners(overrides, "EVLI")
+
+    assert overrides["investments"]["portfolio_owners"]["EVLI"] == "PERSONAL"
+    assert "portfolio_types" not in overrides["investments"]
+
+
+def test_collect_portfolio_owners_warns_and_can_abort_when_replacing_existing_multi_portfolio(monkeypatch):
+    """
+    Real bug caught by the user: answering "no" to "more than one portfolio"
+    for a broker that already has several real portfolios configured would
+    silently replace that whole per-portfolio breakdown with one flat owner.
+    Must warn, and let the user back out without changing anything.
+    """
+    existing = {
+        "investments": {
+            "portfolio_owners": {
+                "NORDNET": {"11111111": "PERSON_A", "22222222": "PERSON_B", "default": "HOUSEHOLD"},
+            },
+        },
+    }
+    # Default for "more than one portfolio?" should be Y (pre-filled from existing data) -
+    # answer "n" anyway to trigger the warning, then decline the replacement.
+    _feed(monkeypatch, ["n", "n"])
+    overrides = {}
+
+    wizard.collect_portfolio_owners(overrides, "NORDNET", existing)
+
+    assert "investments" not in overrides
+
+
+def test_collect_portfolio_owners_replaces_existing_multi_portfolio_when_confirmed(monkeypatch):
+    existing = {
+        "investments": {
+            "portfolio_owners": {
+                "NORDNET": {"11111111": "PERSON_A", "default": "HOUSEHOLD"},
+            },
+        },
+    }
+    _feed(monkeypatch, ["n", "y", "personb", "1"])
+    overrides = {}
+
+    wizard.collect_portfolio_owners(overrides, "NORDNET", existing)
+
+    assert overrides["investments"]["portfolio_owners"]["NORDNET"] == "PERSONB"
 
 
 def test_collect_investment_broker_settings_evli_asks_fixed_instrument_name(monkeypatch):
@@ -137,6 +202,16 @@ def test_collect_investment_broker_settings_evli_asks_fixed_instrument_name(monk
 
     assert overrides["investments"]["broker_defaults"]["EVLI"]["fixed_instrument_name"] == "NOKIA"
     assert overrides["investments"]["portfolio_owners"]["EVLI"] == "PERSONAL"
+    assert "portfolio_types" not in overrides["investments"]
+
+
+def test_collect_investment_broker_settings_auto_fills_fixed_portfolio_type(monkeypatch):
+    _feed(monkeypatch, ["n", "household"])
+    overrides = {}
+
+    wizard.collect_investment_broker_settings(overrides, "COINMOTION")
+
+    assert overrides["investments"]["portfolio_types"]["COINMOTION"] == "Crypto wallet"
 
 
 def test_offer_template_copy_only_copies_missing_files(tmp_path, monkeypatch):
