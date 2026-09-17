@@ -6,6 +6,7 @@ from pathlib import Path
 import pandas as pd
 
 from finance_parser.common import normalise_header, normalise_text
+from finance_parser.investments.investment_common import load_instrument_master
 from finance_parser.settings import get_settings
 from finance_parser.utilities.fresh_workbook_writer import (
     records_to_sheet_values,
@@ -28,6 +29,7 @@ POSITIONS_COLUMNS = [
     "PortfolioOwner",
     "PortfolioType",
     "NormalizedInstrument",
+    "InstrumentType",
     "Date",
     "TransactionType",
     "QuantityDelta",
@@ -166,6 +168,10 @@ def load_transactions(investments_workbook: Path) -> pd.DataFrame:
         df["PortfolioType"] = ""
     df["PortfolioType"] = df["PortfolioType"].map(normalise_text)
 
+    if "InstrumentType" not in df.columns:
+        df["InstrumentType"] = ""
+    df["InstrumentType"] = df["InstrumentType"].map(normalise_text)
+
     return df
 
 
@@ -242,6 +248,29 @@ def load_average_cost_instruments(instrument_master_path: Path) -> set[str]:
 
     is_average = df["CostBasisMethod"].map(normalise_text).str.upper() == "AVERAGE"
     return set(df.loc[is_average, "NormalizedInstrument"].map(normalise_text).str.upper())
+
+
+def instrument_type_by_name(instrument_master_path: Path) -> dict[str, str]:
+    """
+    NormalizedInstrument -> InstrumentType lookup, for backfilling rows that
+    don't already carry it. Opening-position rows (seeded straight from
+    InstrumentMaster.xlsx's OpeningPositions sheet - see
+    load_opening_positions()) never have it; real InvestmentTransactions
+    rows normally already do, via investment_common.apply_instrument_master()
+    at parse time, but this covers any gap either way.
+    """
+    master = load_instrument_master(instrument_master_path)
+    if len(master) == 0:
+        return {}
+
+    types: dict[str, str] = {}
+    for _, row in master.iterrows():
+        name = normalise_text(row.get("NormalizedInstrument", "")).upper()
+        instrument_type = normalise_text(row.get("InstrumentType", ""))
+        if not name or not instrument_type:
+            continue
+        types.setdefault(name, instrument_type)
+    return types
 
 
 def apply_average_cost_basis(active: pd.DataFrame, group_cols: list[str], average_cost_instruments: set[str]) -> pd.Series:
@@ -375,6 +404,16 @@ def build_positions(
         settings = get_settings()
         df.loc[blank_type, "PortfolioType"] = df.loc[blank_type].apply(
             lambda r: settings.portfolio_type(r["Broker"], r["Portfolio"]), axis=1
+        )
+
+    if "InstrumentType" not in df.columns:
+        df["InstrumentType"] = ""
+    df["InstrumentType"] = df["InstrumentType"].fillna("").map(normalise_text)
+    blank_instrument_type = df["InstrumentType"] == ""
+    if blank_instrument_type.any():
+        type_by_name = instrument_type_by_name(instrument_master)
+        df.loc[blank_instrument_type, "InstrumentType"] = df.loc[blank_instrument_type, "NormalizedInstrument"].map(
+            lambda name: type_by_name.get(normalise_text(name).upper(), "")
         )
 
     df["QuantityDelta"] = df.apply(classify_quantity_delta, axis=1)

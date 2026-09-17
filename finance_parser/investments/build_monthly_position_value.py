@@ -25,7 +25,7 @@ DEFAULT_OUTPUT_WORKBOOK = PROJECT_ROOT / "output" / "investments" / "MonthlyPosi
 MONTHLY_VALUE_SHEET = "MonthlyPositionValue"
 MONTHLY_VALUE_COLUMNS = [
     "MonthEnd", "Year", "Month", "Broker", "Portfolio", "PortfolioOwner", "PortfolioType",
-    "NormalizedInstrument", "CumulativeQuantity", "PriceLocal", "InstrumentCurrency",
+    "NormalizedInstrument", "InstrumentType", "CumulativeQuantity", "PriceLocal", "InstrumentCurrency",
     "PriceDate", "FXRate", "FXDate", "MarketValueEUR",
     "CumulativeNetInvested", "UnrealizedGainEUR", "UnrealizedGainPercent",
     "DividendGrossEUR", "DividendTaxEUR", "DividendNetEUR",
@@ -93,6 +93,10 @@ def load_portfolio_positions(path: Path) -> pd.DataFrame:
     if "PortfolioType" not in df.columns:
         df["PortfolioType"] = ""
     df["PortfolioType"] = df["PortfolioType"].map(normalise_text)
+
+    if "InstrumentType" not in df.columns:
+        df["InstrumentType"] = ""
+    df["InstrumentType"] = df["InstrumentType"].map(normalise_text)
 
     return df.dropna(subset=["Date"]).sort_values("Date")
 
@@ -286,6 +290,7 @@ def build_cash_balance_rows(cash_source: pd.DataFrame, last_month_end: pd.Timest
                 "PortfolioOwner": owner,
                 "PortfolioType": portfolio_type,
                 "NormalizedInstrument": CASH_INSTRUMENT_LABEL,
+                "InstrumentType": "CASH",
                 "CumulativeQuantity": "",
                 "PriceLocal": "",
                 "InstrumentCurrency": "EUR",
@@ -337,6 +342,7 @@ def build_monthly_values(
         group = group.sort_values("Date")
         owner = normalise_text(group["PortfolioOwner"].iloc[0]) if "PortfolioOwner" in group.columns else ""
         portfolio_type = normalise_text(group["PortfolioType"].iloc[0]) if "PortfolioType" in group.columns else ""
+        instrument_type = normalise_text(group["InstrumentType"].iloc[0]) if "InstrumentType" in group.columns else ""
         months = month_end_dates(group["Date"].iloc[0], last_month_end)
         if len(months) == 0:
             continue
@@ -413,6 +419,7 @@ def build_monthly_values(
                 "PortfolioOwner": owner,
                 "PortfolioType": portfolio_type,
                 "NormalizedInstrument": instrument,
+                "InstrumentType": instrument_type,
                 "CumulativeQuantity": quantity,
                 "PriceLocal": price_local,
                 "InstrumentCurrency": currency,

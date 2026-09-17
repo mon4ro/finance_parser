@@ -9,7 +9,7 @@ from finance_parser.investments.build_portfolio_positions import build_positions
 
 
 TRANSACTIONS_HEADERS = [
-    "Broker", "Portfolio", "PortfolioOwner", "NormalizedInstrument", "TransactionType",
+    "Broker", "Portfolio", "PortfolioOwner", "NormalizedInstrument", "InstrumentType", "TransactionType",
     "TradeDate", "Quantity", "CashAmount",
 ]
 
@@ -62,7 +62,7 @@ def _write_instrument_master(path, opening_position_rows, master_rows=None):
     wb = Workbook()
     ws = wb.active
     ws.title = "InstrumentMaster"
-    master_headers = ["NormalizedInstrument", "CostBasisMethod"]
+    master_headers = ["NormalizedInstrument", "CostBasisMethod", "InstrumentType"]
     ws.append(master_headers)
     for row in (master_rows or []):
         ws.append([row.get(h, "") for h in master_headers])
@@ -550,3 +550,66 @@ def test_build_positions_backfills_blank_portfolio_type_from_settings(tmp_path):
         assert list(positions["PortfolioType"]) == ["OSAKESAASTOTILI"]
     finally:
         settings_module._SETTINGS_CACHE = old_cache
+
+
+def test_build_positions_carries_instrument_type_from_transactions(tmp_path):
+    """
+    InstrumentType is already resolved per-row on real InvestmentTransactions
+    (via investment_common.apply_instrument_master() at parse time) - it
+    should pass straight through to PortfolioPositions.xlsx, enabling a
+    stocks/funds/cash split without a separate lookup against
+    InstrumentMaster.xlsx.
+    """
+    path = tmp_path / "ParsedInvestments.xlsx"
+    _write_transactions(path, [
+        {"Broker": "NORDNET", "Portfolio": "1", "NormalizedInstrument": "SAMPO A", "InstrumentType": "STOCK", "TransactionType": "BUY", "TradeDate": "2021-01-01", "Quantity": 100, "CashAmount": -1000},
+        {"Broker": "NORDNET", "Portfolio": "1", "NormalizedInstrument": "OP-SUOMI A", "InstrumentType": "FUND", "TransactionType": "BUY", "TradeDate": "2021-01-01", "Quantity": 10, "CashAmount": -100},
+    ])
+
+    positions, _ = build_positions(path, _no_instrument_master(tmp_path))
+
+    by_instrument = positions.set_index("NormalizedInstrument")["InstrumentType"]
+    assert by_instrument["SAMPO A"] == "STOCK"
+    assert by_instrument["OP-SUOMI A"] == "FUND"
+
+
+def test_build_positions_backfills_blank_instrument_type_from_master(tmp_path):
+    """A transaction row somehow missing InstrumentType (e.g. parsed before
+    the column existed) should get it from InstrumentMaster.xlsx by name,
+    the same way a blank PortfolioType/PortfolioOwner gets backfilled from
+    settings.yaml."""
+    path = tmp_path / "ParsedInvestments.xlsx"
+    _write_transactions(path, [
+        {"Broker": "NORDNET", "Portfolio": "1", "NormalizedInstrument": "SAMPO A", "TransactionType": "BUY", "TradeDate": "2021-01-01", "Quantity": 100, "CashAmount": -1000},
+    ])
+
+    instrument_master_path = tmp_path / "InstrumentMaster.xlsx"
+    _write_instrument_master(instrument_master_path, [], master_rows=[
+        {"NormalizedInstrument": "SAMPO A", "InstrumentType": "STOCK"},
+    ])
+
+    positions, _ = build_positions(path, instrument_master_path)
+
+    assert list(positions["InstrumentType"]) == ["STOCK"]
+
+
+def test_build_positions_backfills_instrument_type_for_opening_positions(tmp_path):
+    """Opening-position rows (seeded from InstrumentMaster's OpeningPositions
+    sheet, never carrying InstrumentType of their own) must also resolve it
+    from the same InstrumentMaster.xlsx, not stay permanently blank."""
+    investments_path = tmp_path / "ParsedInvestments.xlsx"
+    _write_transactions(investments_path, [
+        {"Broker": "OP", "Portfolio": "OP", "NormalizedInstrument": "OP-EUROOPPA PIENYHTIÖT A", "TransactionType": "SELL", "TradeDate": "2024-12-27", "Quantity": 0.7761, "CashAmount": 30.0},
+    ])
+
+    instrument_master_path = tmp_path / "InstrumentMaster.xlsx"
+    _write_instrument_master(
+        instrument_master_path,
+        [{"Broker": "OP", "Portfolio": "OP", "NormalizedInstrument": "OP-Eurooppa Pienyhtiöt A", "Date": "2013-10-10", "Quantity": 0.78}],
+        master_rows=[{"NormalizedInstrument": "OP-EUROOPPA PIENYHTIÖT A", "InstrumentType": "FUND"}],
+    )
+
+    positions, _ = build_positions(investments_path, instrument_master_path)
+
+    rows = positions[positions["NormalizedInstrument"] == "OP-EUROOPPA PIENYHTIÖT A"]
+    assert list(rows["InstrumentType"]) == ["FUND", "FUND"]

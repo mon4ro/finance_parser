@@ -449,6 +449,48 @@ def test_portfolio_type_blank_when_positions_sheet_predates_the_column(tmp_path)
     assert result.iloc[0]["PortfolioType"] == ""
 
 
+def test_instrument_type_carried_through_from_positions(tmp_path):
+    """InstrumentType (STOCK/FUND/CRYPTO/...) enables a stocks/funds/cash
+    split directly from MonthlyPositionValue.xlsx, without a separate lookup
+    against InstrumentMaster.xlsx."""
+    positions_path = tmp_path / "PortfolioPositions.xlsx"
+    prices_path = tmp_path / "InstrumentPrices.xlsx"
+    fx_path = tmp_path / "FXRates.xlsx"
+
+    _write_sheet(
+        positions_path,
+        "PortfolioPositions",
+        POSITIONS_HEADERS + ["InstrumentType"],
+        [{"Broker": "NORDNET", "Portfolio": "1", "PortfolioOwner": "PERSON_A", "InstrumentType": "STOCK", "NormalizedInstrument": "SAMPO A", "Date": "2021-03-15", "CumulativeQuantity": 100, "CumulativeNetInvested": -1000}],
+    )
+    _prices(prices_path, [
+        {"NormalizedInstrument": "SAMPO A", "Date": "2021-03-31", "Close": 12.0, "Currency": "EUR"},
+    ])
+    _fx(fx_path, [])
+
+    result, stats = build_monthly_values(positions_path, prices_path, fx_path, as_of=date(2021, 4, 5))
+
+    assert result.iloc[0]["InstrumentType"] == "STOCK"
+
+
+def test_instrument_type_blank_when_positions_sheet_predates_the_column(tmp_path):
+    positions_path = tmp_path / "PortfolioPositions.xlsx"
+    prices_path = tmp_path / "InstrumentPrices.xlsx"
+    fx_path = tmp_path / "FXRates.xlsx"
+
+    _positions(positions_path, [
+        {"Broker": "NORDNET", "Portfolio": "1", "NormalizedInstrument": "SAMPO A", "Date": "2021-03-15", "CumulativeQuantity": 100, "CumulativeNetInvested": -1000},
+    ])
+    _prices(prices_path, [
+        {"NormalizedInstrument": "SAMPO A", "Date": "2021-03-31", "Close": 12.0, "Currency": "EUR"},
+    ])
+    _fx(fx_path, [])
+
+    result, stats = build_monthly_values(positions_path, prices_path, fx_path, as_of=date(2021, 4, 5))
+
+    assert result.iloc[0]["InstrumentType"] == ""
+
+
 def test_load_cash_balance_source_filters_to_tracked_brokers_only(tmp_path):
     path = tmp_path / "ParsedInvestments.xlsx"
     _write_sheet(path, "RawInvestmentTransactions", RAW_TRANSACTIONS_HEADERS, [
@@ -494,6 +536,7 @@ def test_cash_balance_rows_nordnet_uses_raw_cash_balance_field_directly(tmp_path
     assert by_month["2021-01-31"]["PortfolioOwner"] == "PERSON_A"
     assert by_month["2021-01-31"]["PortfolioType"] == "OSAKESAASTOTILI"
     assert by_month["2021-01-31"]["NormalizedInstrument"] == "CASH"
+    assert by_month["2021-01-31"]["InstrumentType"] == "CASH"
 
 
 def test_cash_balance_rows_evli_reconstructed_via_cumsum(tmp_path):
