@@ -18,6 +18,11 @@ BUDGETING_RULES_DIR = PROJECT_ROOT / "rules" / "budgeting"
 DEFAULT_INPUT_PATH = BUDGETING_INPUT_DIR
 DEFAULT_WORKBOOK = BUDGETING_OUTPUT_DIR / "ParsedTransactions.xlsx"
 DEFAULT_RULES = BUDGETING_RULES_DIR / "TransactionRules.xlsx"
+# Read-only cross-pipeline input, not owned by this pipeline - see
+# investment_dividends.py (Nordnet/EVLI synthetic dividend income, no
+# matching bank transaction exists) and enrich_dividend_income.py (OP-held
+# instruments, cross-referenced against an existing real bank transaction).
+DEFAULT_DIVIDEND_HISTORY = PROJECT_ROOT / "output" / "investments" / "DividendHistory.xlsx"
 
 
 @dataclass(frozen=True)
@@ -76,6 +81,18 @@ def build_arg_parser() -> argparse.ArgumentParser:
         action="store_true",
         help="Pass verbose/debug output to pipeline steps that support it.",
     )
+    parser.add_argument(
+        "--dividend-history",
+        default=str(DEFAULT_DIVIDEND_HISTORY),
+        help="Read-only: investment pipeline's DividendHistory.xlsx, source for real dividend "
+             "income (Nordnet/EVLI synthetic rows, OP-held cross-reference enrichment).",
+    )
+    parser.add_argument(
+        "--skip-dividends",
+        action="store_true",
+        help="Skip both dividend-income stages (useful if the investment pipeline hasn't been "
+             "run yet, or DividendHistory.xlsx doesn't exist).",
+    )
     return parser
 
 
@@ -110,6 +127,8 @@ def build_pipeline_commands(
     rules_path: Path,
     no_profile: bool = False,
     verbose: bool = False,
+    dividend_history_path: Path | None = None,
+    skip_dividends: bool = False,
 ) -> list[PipelineCommand]:
     parser_cmd = [
         python_executable,
@@ -127,6 +146,21 @@ def build_pipeline_commands(
     if verbose:
         parser_cmd.append("--verbose")
 
+    # Reuses transaction_parser.py against a single cross-pipeline file
+    # (not input/budgeting/) - investment_dividends.py only claims this one
+    # specific file shape, so it's safe to run as its own targeted step.
+    dividend_parser_cmd = [
+        python_executable,
+        "-m",
+        "finance_parser.budgeting.transaction_parser",
+        "--input",
+        str(dividend_history_path),
+        "--output",
+        str(workbook_path),
+    ]
+    if no_profile:
+        dividend_parser_cmd.append("--no-profile")
+
     normaliser_cmd = [
         python_executable,
         "-m",
@@ -135,6 +169,19 @@ def build_pipeline_commands(
         str(workbook_path),
         "--rules",
         str(rules_path),
+    ]
+
+    # Runs BEFORE the categoriser so its high-confidence, cross-referenced
+    # values win by default (categoriser rules default to BLANK_ONLY, so
+    # they'll correctly skip cells this step already filled).
+    dividend_enrich_cmd = [
+        python_executable,
+        "-m",
+        "finance_parser.budgeting.enrich_dividend_income",
+        "--workbook",
+        str(workbook_path),
+        "--dividend-history",
+        str(dividend_history_path),
     ]
 
     categoriser_cmd = [
@@ -147,11 +194,16 @@ def build_pipeline_commands(
         str(rules_path),
     ]
 
-    return [
-        PipelineCommand("transaction parser", parser_cmd),
-        PipelineCommand("transaction normaliser", normaliser_cmd),
-        PipelineCommand("transaction categoriser", categoriser_cmd),
-    ]
+    run_dividend_stages = not skip_dividends and dividend_history_path is not None
+
+    commands = [PipelineCommand("transaction parser", parser_cmd)]
+    if run_dividend_stages:
+        commands.append(PipelineCommand("investment dividend parser", dividend_parser_cmd))
+    commands.append(PipelineCommand("transaction normaliser", normaliser_cmd))
+    if run_dividend_stages:
+        commands.append(PipelineCommand("dividend income enrichment", dividend_enrich_cmd))
+    commands.append(PipelineCommand("transaction categoriser", categoriser_cmd))
+    return commands
 
 
 def run_command(command: PipelineCommand) -> None:
@@ -185,6 +237,14 @@ def run_pipeline(args: argparse.Namespace) -> int:
         print("Budgeting pipeline.")
         print(f"Workbook: {real_workbook}")
 
+    dividend_history_path = Path(args.dividend_history).expanduser().resolve()
+    skip_dividends = args.skip_dividends
+    if not skip_dividends and not dividend_history_path.exists():
+        print()
+        print(f"Note: dividend history not found at {dividend_history_path} - skipping dividend-income stages.")
+        print("Run the investment pipeline first (run_investment_pipeline.py) to enable them.")
+        skip_dividends = True
+
     commands = build_pipeline_commands(
         python_executable=sys.executable,
         input_path=input_path,
@@ -192,6 +252,8 @@ def run_pipeline(args: argparse.Namespace) -> int:
         rules_path=rules_path,
         no_profile=args.no_profile,
         verbose=args.verbose,
+        dividend_history_path=dividend_history_path,
+        skip_dividends=skip_dividends,
     )
 
     try:

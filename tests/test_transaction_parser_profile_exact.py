@@ -10,7 +10,7 @@ PARSER = PROJECT_ROOT / "finance_parser" / "budgeting" / "transaction_parser.py"
 def test_get_parser_modules_returns_supported_parsers():
     modules = transaction_parser.get_parser_modules()
     assert modules == transaction_parser.SUPPORTED_PARSERS
-    assert {module.SOURCE_BANK for module in modules} == {"OP", "NORWEGIAN", "NORDEA", "SPANKKI", "CASH"}
+    assert {module.SOURCE_BANK for module in modules} == {"OP", "NORWEGIAN", "NORDEA", "SPANKKI", "CASH", "INVESTMENT_DIVIDEND"}
 
 
 def test_transaction_parser_source_has_no_missing_parsers_reference():

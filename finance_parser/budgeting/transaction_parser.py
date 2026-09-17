@@ -29,7 +29,7 @@ from finance_parser.common import (
     append_change_log_entry,
 )
 
-from finance_parser.budgeting.parsers import op, norwegian, nordea, spankki, cash
+from finance_parser.budgeting.parsers import op, norwegian, nordea, spankki, cash, investment_dividends
 
 
 PROJECT_ROOT = Path(__file__).resolve().parents[2]
@@ -46,6 +46,7 @@ SUPPORTED_PARSERS = [
     nordea,
     spankki,
     cash,
+    investment_dividends,
 ]
 
 

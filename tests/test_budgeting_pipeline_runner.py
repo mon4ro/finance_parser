@@ -80,6 +80,60 @@ def test_build_pipeline_commands_does_not_pass_step_dry_run():
     assert all("--dry-run" not in command.argv for command in commands)
 
 
+def test_dividend_stages_included_when_history_path_given():
+    commands = pipeline.build_pipeline_commands(
+        python_executable="python",
+        input_path=Path("input/budgeting"),
+        workbook_path=Path("output/budgeting/ParsedTransactions.xlsx"),
+        rules_path=Path("rules/budgeting/TransactionRules.xlsx"),
+        dividend_history_path=Path("output/investments/DividendHistory.xlsx"),
+    )
+
+    assert [command.name for command in commands] == [
+        "transaction parser",
+        "investment dividend parser",
+        "transaction normaliser",
+        "dividend income enrichment",
+        "transaction categoriser",
+    ]
+    # Dividend enrichment runs BEFORE the categoriser so its cross-referenced
+    # values win by default (categoriser rules default to BLANK_ONLY).
+    names = [c.name for c in commands]
+    assert names.index("dividend income enrichment") < names.index("transaction categoriser")
+
+
+def test_dividend_stages_skipped_when_history_path_omitted():
+    commands = pipeline.build_pipeline_commands(
+        python_executable="python",
+        input_path=Path("input/budgeting"),
+        workbook_path=Path("output/budgeting/ParsedTransactions.xlsx"),
+        rules_path=Path("rules/budgeting/TransactionRules.xlsx"),
+    )
+
+    assert [command.name for command in commands] == [
+        "transaction parser",
+        "transaction normaliser",
+        "transaction categoriser",
+    ]
+
+
+def test_dividend_stages_skipped_when_explicitly_requested():
+    commands = pipeline.build_pipeline_commands(
+        python_executable="python",
+        input_path=Path("input/budgeting"),
+        workbook_path=Path("output/budgeting/ParsedTransactions.xlsx"),
+        rules_path=Path("rules/budgeting/TransactionRules.xlsx"),
+        dividend_history_path=Path("output/investments/DividendHistory.xlsx"),
+        skip_dividends=True,
+    )
+
+    assert [command.name for command in commands] == [
+        "transaction parser",
+        "transaction normaliser",
+        "transaction categoriser",
+    ]
+
+
 def test_build_pipeline_commands_can_disable_parser_profile_and_enable_verbose():
     commands = pipeline.build_pipeline_commands(
         python_executable="python",
