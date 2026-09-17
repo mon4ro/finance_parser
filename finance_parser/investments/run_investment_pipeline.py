@@ -24,6 +24,7 @@ DEFAULT_FX_RATES_WORKBOOK = INVESTMENT_OUTPUT_DIR / "FXRates.xlsx"
 DEFAULT_POSITIONS_WORKBOOK = INVESTMENT_OUTPUT_DIR / "PortfolioPositions.xlsx"
 DEFAULT_MONTHLY_VALUE_WORKBOOK = INVESTMENT_OUTPUT_DIR / "MonthlyPositionValue.xlsx"
 DEFAULT_DIVIDEND_HISTORY_WORKBOOK = INVESTMENT_OUTPUT_DIR / "DividendHistory.xlsx"
+DEFAULT_FUND_HOLDINGS_WORKBOOK = INVESTMENT_OUTPUT_DIR / "FundHoldingsSnapshot.xlsx"
 # Read-only cross-pipeline input, not part of this pipeline's own
 # dry-run-copied workbooks - see build_dividend_history.py's
 # --budgeting-workbook (best-effort local-currency dividend enrichment).
@@ -36,7 +37,7 @@ DEFAULT_STALE_DAYS = 7
 # read-only inputs to every stage (never written by the pipeline itself) and
 # are never copied - same distinction the budgeting orchestrator already
 # makes between --workbook (copied) and --rules (not copied).
-WORKBOOK_KEYS = ["investments", "prices", "fx_rates", "positions", "monthly_value", "dividend_history"]
+WORKBOOK_KEYS = ["investments", "prices", "fx_rates", "positions", "monthly_value", "dividend_history", "fund_holdings"]
 
 
 @dataclass(frozen=True)
@@ -64,6 +65,7 @@ def build_arg_parser() -> argparse.ArgumentParser:
     parser.add_argument("--positions-workbook", default=str(DEFAULT_POSITIONS_WORKBOOK))
     parser.add_argument("--monthly-value-workbook", default=str(DEFAULT_MONTHLY_VALUE_WORKBOOK))
     parser.add_argument("--dividend-history-workbook", default=str(DEFAULT_DIVIDEND_HISTORY_WORKBOOK))
+    parser.add_argument("--fund-holdings-workbook", default=str(DEFAULT_FUND_HOLDINGS_WORKBOOK))
     parser.add_argument(
         "--budgeting-workbook",
         default=str(DEFAULT_BUDGETING_WORKBOOK),
@@ -107,6 +109,12 @@ def build_arg_parser() -> argparse.ArgumentParser:
         action="store_true",
         help="Skip the FX rate fetch stage (network call). Same use case as --skip-pricing.",
     )
+    parser.add_argument(
+        "--skip-fund-holdings",
+        action="store_true",
+        help="Skip the fund holdings snapshot stage (network call, and self-throttling to once per "
+             "calendar month anyway). Same use case as --skip-pricing.",
+    )
     return parser
 
 
@@ -145,6 +153,7 @@ def build_pipeline_commands(
     stale_days: int,
     skip_pricing: bool = False,
     skip_fx: bool = False,
+    skip_fund_holdings: bool = False,
     budgeting_workbook: Path | None = None,
     no_local_currency: bool = False,
 ) -> list[PipelineCommand]:
@@ -173,6 +182,13 @@ def build_pipeline_commands(
         "--investments-workbook", str(workbooks["investments"]),
         "--instrument-master", str(instrument_master_path),
         "--positions-workbook", str(workbooks["positions"]),
+    ]
+
+    fund_holdings_cmd = [
+        python_executable, "-m", "finance_parser.investments.fetch_fund_holdings",
+        "--instrument-master", str(instrument_master_path),
+        "--positions-workbook", str(workbooks["positions"]),
+        "--holdings-workbook", str(workbooks["fund_holdings"]),
     ]
 
     coverage_cmd = [
@@ -210,6 +226,8 @@ def build_pipeline_commands(
     if not skip_fx:
         commands.append(PipelineCommand("FX rate fetch", fx_cmd))
     commands.append(PipelineCommand("portfolio positions", positions_cmd))
+    if not skip_fund_holdings:
+        commands.append(PipelineCommand("fund holdings snapshot", fund_holdings_cmd))
     commands.append(PipelineCommand("dividend history", dividend_history_cmd))
     commands.append(PipelineCommand("instrument coverage check", coverage_cmd, is_gate=True))
     commands.append(PipelineCommand("monthly position value rollup", rollup_cmd))
@@ -246,6 +264,7 @@ def run_pipeline(args: argparse.Namespace) -> int:
         "positions": Path(args.positions_workbook).expanduser().resolve(),
         "monthly_value": Path(args.monthly_value_workbook).expanduser().resolve(),
         "dividend_history": Path(args.dividend_history_workbook).expanduser().resolve(),
+        "fund_holdings": Path(args.fund_holdings_workbook).expanduser().resolve(),
     }
 
     INVESTMENT_INPUT_DIR.mkdir(parents=True, exist_ok=True)
@@ -269,12 +288,14 @@ def run_pipeline(args: argparse.Namespace) -> int:
         for key, real_path in real_workbooks.items():
             print(f"  {key}: {real_path}")
 
-    if args.skip_pricing or args.skip_fx:
+    if args.skip_pricing or args.skip_fx or args.skip_fund_holdings:
         print()
         if args.skip_pricing:
             print("Skipping instrument price fetch (--skip-pricing): using existing price data as-is.")
         if args.skip_fx:
             print("Skipping FX rate fetch (--skip-fx): using existing FX rate data as-is.")
+        if args.skip_fund_holdings:
+            print("Skipping fund holdings snapshot (--skip-fund-holdings): using existing holdings data as-is.")
 
     commands = build_pipeline_commands(
         python_executable=sys.executable,
@@ -285,6 +306,7 @@ def run_pipeline(args: argparse.Namespace) -> int:
         stale_days=args.stale_days,
         skip_pricing=args.skip_pricing,
         skip_fx=args.skip_fx,
+        skip_fund_holdings=args.skip_fund_holdings,
         budgeting_workbook=Path(args.budgeting_workbook).expanduser().resolve(),
         no_local_currency=args.no_local_currency,
     )

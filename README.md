@@ -63,10 +63,22 @@ auto-skip with a message if `DividendHistory.xlsx` doesn't exist yet (i.e.
 the investment pipeline hasn't been run) - pass `--skip-dividends` to
 disable them explicitly.
 
+The full pipeline also fetches a monthly snapshot of each actively-held fund's top-10
+constituent holdings (`FundHoldingsSnapshot.xlsx`) - self-throttled to run once per
+calendar month per fund, for future portfolio look-through/concentration analysis (e.g.
+"how much of my total investments are really tied to Nokia, across direct stock plus
+fund exposure"). Uses an unofficial Yahoo Finance endpoint, meaningfully more fragile
+than the price-fetch API - a fund with no data, or a failed fetch, is recorded as 100%
+`UNKNOWN` rather than silently dropped. There's no historical holdings data available
+from Yahoo, so a fund's first-ever fetch also backfills 60 months of assumed-constant
+history, tagged `BACKFILLED_ASSUMED_CONSTANT` to keep it distinguishable from a real
+observed snapshot (`LIVE_FETCH`). Pass `--skip-fund-holdings` to disable it.
+
 ## Investment workflow
 
 Run the full investment pipeline (parse, fetch prices, fetch FX rates, build positions,
-build dividend history, check coverage, build the monthly value rollup):
+fetch fund holdings snapshots, build dividend history, check coverage, build the monthly
+value rollup):
 
 ```bash
 python run_investment_pipeline.py
@@ -92,6 +104,7 @@ python -m finance_parser.investments.investment_parser
 python -m finance_parser.investments.fetch_instrument_prices
 python -m finance_parser.investments.fetch_fx_rates
 python -m finance_parser.investments.build_portfolio_positions
+python -m finance_parser.investments.fetch_fund_holdings
 python -m finance_parser.investments.build_dividend_history
 python -m finance_parser.investments.check_instrument_coverage
 python -m finance_parser.investments.build_monthly_position_value

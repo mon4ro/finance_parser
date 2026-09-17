@@ -35,6 +35,36 @@ def test_pipeline_cli_has_skip_pricing_and_skip_fx():
     assert args.skip_fx is True
 
 
+def test_pipeline_cli_has_skip_fund_holdings():
+    parser = pipeline.build_arg_parser()
+    args = parser.parse_args(["--skip-fund-holdings"])
+
+    assert args.skip_fund_holdings is True
+
+
+def test_skip_fund_holdings_omits_fund_holdings_stage_but_keeps_others():
+    workbooks = {key: Path(f"{key}.xlsx") for key in pipeline.WORKBOOK_KEYS}
+    commands = pipeline.build_pipeline_commands(
+        python_executable="python",
+        input_path=Path("input/investments"),
+        instrument_master_path=Path("rules/investments/InstrumentMaster.xlsx"),
+        workbooks=workbooks,
+        force=False,
+        stale_days=7,
+        skip_fund_holdings=True,
+    )
+
+    assert [c.name for c in commands] == [
+        "investment parser",
+        "instrument price fetch",
+        "FX rate fetch",
+        "portfolio positions",
+        "dividend history",
+        "instrument coverage check",
+        "monthly position value rollup",
+    ]
+
+
 def test_skip_pricing_omits_price_fetch_stage_but_keeps_others():
     workbooks = {key: Path(f"{key}.xlsx") for key in pipeline.WORKBOOK_KEYS}
     commands = pipeline.build_pipeline_commands(
@@ -51,6 +81,7 @@ def test_skip_pricing_omits_price_fetch_stage_but_keeps_others():
         "investment parser",
         "FX rate fetch",
         "portfolio positions",
+        "fund holdings snapshot",
         "dividend history",
         "instrument coverage check",
         "monthly position value rollup",
@@ -73,6 +104,7 @@ def test_skip_fx_omits_fx_fetch_stage_but_keeps_others():
         "investment parser",
         "instrument price fetch",
         "portfolio positions",
+        "fund holdings snapshot",
         "dividend history",
         "instrument coverage check",
         "monthly position value rollup",
@@ -95,6 +127,7 @@ def test_skip_pricing_and_skip_fx_together_omit_both_network_stages():
     assert [c.name for c in commands] == [
         "investment parser",
         "portfolio positions",
+        "fund holdings snapshot",
         "dividend history",
         "instrument coverage check",
         "monthly position value rollup",
@@ -118,6 +151,7 @@ def test_build_pipeline_commands_runs_stages_in_dependency_order():
         "positions": Path("output/investments/PortfolioPositions.xlsx"),
         "monthly_value": Path("output/investments/MonthlyPositionValue.xlsx"),
         "dividend_history": Path("output/investments/DividendHistory.xlsx"),
+        "fund_holdings": Path("output/investments/FundHoldingsSnapshot.xlsx"),
     }
     commands = pipeline.build_pipeline_commands(
         python_executable="python",
@@ -133,6 +167,7 @@ def test_build_pipeline_commands_runs_stages_in_dependency_order():
         "instrument price fetch",
         "FX rate fetch",
         "portfolio positions",
+        "fund holdings snapshot",
         "dividend history",
         "instrument coverage check",
         "monthly position value rollup",
@@ -142,9 +177,10 @@ def test_build_pipeline_commands_runs_stages_in_dependency_order():
     assert commands[1].argv[:3] == ["python", "-m", "finance_parser.investments.fetch_instrument_prices"]
     assert commands[2].argv[:3] == ["python", "-m", "finance_parser.investments.fetch_fx_rates"]
     assert commands[3].argv[:3] == ["python", "-m", "finance_parser.investments.build_portfolio_positions"]
-    assert commands[4].argv[:3] == ["python", "-m", "finance_parser.investments.build_dividend_history"]
-    assert commands[5].argv[:3] == ["python", "-m", "finance_parser.investments.check_instrument_coverage"]
-    assert commands[6].argv[:3] == ["python", "-m", "finance_parser.investments.build_monthly_position_value"]
+    assert commands[4].argv[:3] == ["python", "-m", "finance_parser.investments.fetch_fund_holdings"]
+    assert commands[5].argv[:3] == ["python", "-m", "finance_parser.investments.build_dividend_history"]
+    assert commands[6].argv[:3] == ["python", "-m", "finance_parser.investments.check_instrument_coverage"]
+    assert commands[7].argv[:3] == ["python", "-m", "finance_parser.investments.build_monthly_position_value"]
 
 
 def test_coverage_check_is_marked_as_the_gate_stage():

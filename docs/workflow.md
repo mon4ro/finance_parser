@@ -92,6 +92,7 @@ python -m finance_parser.budgeting.transaction_categoriser --dry-run
    output/investments/PortfolioPositions.xlsx
    output/investments/MonthlyPositionValue.xlsx
    output/investments/DividendHistory.xlsx
+   output/investments/FundHoldingsSnapshot.xlsx
    ```
 
 The pipeline runs, in order:
@@ -101,10 +102,19 @@ The pipeline runs, in order:
 2. instrument price fetch (Yahoo)
 3. FX rate fetch
 4. portfolio positions
-5. dividend history
-6. instrument coverage check (gate)
-7. monthly position value rollup
+5. fund holdings snapshot (Yahoo, self-throttled to once/month per fund)
+6. dividend history
+7. instrument coverage check (gate)
+8. monthly position value rollup
 ```
+
+Step 5 fetches each actively-held fund's top-10 constituent holdings, for future
+look-through/concentration analysis. It uses an unofficial Yahoo endpoint (more fragile
+than the price API) - a fund with no data or a failed fetch is recorded as 100%
+`UNKNOWN` rather than dropped, and a fund's first-ever fetch backfills 60 months of
+assumed-constant history (tagged `BACKFILLED_ASSUMED_CONSTANT`, distinct from a real
+`LIVE_FETCH` snapshot) since no historical holdings data exists from Yahoo. Pass
+`--skip-fund-holdings` to disable it.
 
 Step 6 halts the pipeline if an actively-held instrument is missing classification, a
 price symbol, or a recent price - pass `--force` to proceed anyway with incomplete
@@ -133,6 +143,7 @@ python -m finance_parser.investments.investment_parser
 python -m finance_parser.investments.fetch_instrument_prices
 python -m finance_parser.investments.fetch_fx_rates
 python -m finance_parser.investments.build_portfolio_positions
+python -m finance_parser.investments.fetch_fund_holdings
 python -m finance_parser.investments.build_dividend_history
 python -m finance_parser.investments.check_instrument_coverage
 python -m finance_parser.investments.build_monthly_position_value
