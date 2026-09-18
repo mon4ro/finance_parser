@@ -182,6 +182,35 @@ def test_load_unified_transactions_fills_balance_from_raw_transactions(tmp_path)
     assert float(df.iloc[0]["Balance"]) == 456.78
 
 
+def test_load_unified_transactions_excludes_split_parent_rows(tmp_path):
+    """
+    Real bug found and fixed: a manually-split transaction (the Excel macro
+    described in CLAUDE.md) keeps its original "parent" row (UnifiedID ==
+    "U-"+RawID, Include=NO, superseded per Review/Notes) alongside new
+    "child" rows (UnifiedID == parent+"-S0N") that carry the real
+    per-category amounts - same real RawID, same real money, just
+    reallocated. Counting the parent's Amount together with its children
+    double-counts that one real transaction, which silently inflated every
+    reconstructed monthly balance whose window included it.
+    """
+    path = tmp_path / "ParsedTransactions.xlsx"
+    wb = Workbook()
+    ws = wb.active
+    ws.title = "UnifiedTransactions"
+    ws.append(UNIFIED_COLUMNS)
+    ws.append(["U-RAW-1", "RAW-1", "HOUSEHOLD", "OP", "Bank", "2026-03-15", 3, 2026, -60, "", "", "", "", "NO", "HOUSEHOLD", "", "", "", "", "Split into 2 rows"])
+    ws.append(["U-RAW-1-S01", "RAW-1", "HOUSEHOLD", "OP", "Split", "2026-03-15", 3, 2026, -55, "", "", "", "", "YES", "HOUSEHOLD", "EXPENSES", "Groceries", "", "", ""])
+    ws.append(["U-RAW-1-S02", "RAW-1", "HOUSEHOLD", "OP", "Split", "2026-03-15", 3, 2026, -5, "", "", "", "", "YES", "HOUSEHOLD", "EXPENSES", "Other", "", "", ""])
+    # An ordinary, unsplit transaction must be untouched by the filter.
+    ws.append(["U-RAW-2", "RAW-2", "HOUSEHOLD", "OP", "Bank", "2026-03-16", 3, 2026, -10, "", "", "", "", "YES", "HOUSEHOLD", "", "", "", "", ""])
+    wb.save(path)
+
+    df = load_unified_transactions(path)
+
+    assert sorted(df["UnifiedID"].astype(str)) == ["U-RAW-1-S01", "U-RAW-1-S02", "U-RAW-2"]
+    assert float(df["Amount"].astype(float).sum()) == -70.0
+
+
 def test_load_unified_transactions_prefers_own_balance_over_raw_fallback(tmp_path):
     """A row that already has its own real Balance (unified after the fix)
     must not get overwritten by the raw fallback."""

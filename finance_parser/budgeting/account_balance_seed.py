@@ -56,6 +56,22 @@ def load_unified_transactions(budgeting_workbook: Path) -> pd.DataFrame:
     except (ValueError, KeyError):
         pass
 
+    # A manually-split transaction (the Excel macro described in CLAUDE.md)
+    # keeps its original "parent" row (UnifiedID == "U-"+RawID, Include=NO,
+    # Review/Notes marks it superseded) alongside new "child" rows
+    # (UnifiedID == parent+"-S0N") that carry the real per-category amounts -
+    # same real RawID, same real money, just reallocated. Summing the
+    # parent's Amount together with its children double-counts that one real
+    # transaction. Real bug this fixed: found via a real dry-run - a single
+    # split transaction was inflating every reconstructed month's balance
+    # whose window included it, by the parent's own full Amount.
+    if "UnifiedID" in df.columns and "RawID" in df.columns:
+        base_unified_id = "U-" + df["RawID"].astype(str)
+        is_child_row = df["UnifiedID"].astype(str) != base_unified_id
+        raw_ids_with_children = set(df.loc[is_child_row, "RawID"].astype(str))
+        is_split_parent = (~is_child_row) & df["RawID"].astype(str).isin(raw_ids_with_children)
+        df = df[~is_split_parent]
+
     return df
 
 

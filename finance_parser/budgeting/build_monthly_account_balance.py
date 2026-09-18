@@ -12,6 +12,7 @@ from finance_parser.budgeting.account_balance_seed import (
     EXCLUDED_SOURCE_ACCOUNTS,
     load_unified_transactions,
 )
+from finance_parser.budgeting.parsers.investment_dividends import SOURCE_BANK as INVESTMENT_DIVIDEND_SOURCE_BANK
 from finance_parser.common import normalise_text
 from finance_parser.settings import AppSettings, get_settings
 from finance_parser.utilities.fresh_workbook_writer import (
@@ -210,6 +211,16 @@ def build_monthly_balances(
             continue
 
         group = group[group["_Date"].notna()].sort_values("_Date")
+        # Synthetic dividend-income rows (Nordnet/EVLI, injected by
+        # investment_dividends.py) never hit this bank account for real -
+        # the cash lands in the broker's own cash balance instead (see that
+        # module's own docstring). They're correct for budgeting's income
+        # view but must not count as a real balance-affecting event here, or
+        # they double-book money that's actually still at the broker. Real
+        # bug this fixes: found via a real dry-run - these rows were
+        # inflating several months' reconstructed balance by exactly their
+        # own summed amount.
+        group = group[group["SourceBank"] != INVESTMENT_DIVIDEND_SOURCE_BANK]
         if len(group) == 0:
             continue
 
