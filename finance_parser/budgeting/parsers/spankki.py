@@ -10,6 +10,7 @@ from finance_parser.common import (
     format_date,
     normalise_amount,
     normalise_header,
+    normalise_reference_text,
     normalise_text,
     read_input_file,
     stable_hash,
@@ -131,7 +132,7 @@ def parse_file(path: Path, imported_at: str) -> pd.DataFrame:
 
     out["ReceiverAccount"] = df["Saajan tilinumero"].map(normalise_text)
     out["ReceiverBankBIC"] = df["Saajan BIC-tunnus"].map(normalise_text)
-    out["Reference"] = df["Viitenumero"].map(normalise_text)
+    out["Reference"] = df["Viitenumero"].map(normalise_reference_text)
     out["Message"] = df["Viesti"].map(normalise_text)
     out["ArchiveID"] = df["Arkistointitunnus"].map(normalise_text)
     out["Balance"] = ""

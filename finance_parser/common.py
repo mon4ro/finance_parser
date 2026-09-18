@@ -176,6 +176,31 @@ def normalise_text(value: object) -> str:
 
     return str(value).strip()
 
+
+def normalise_reference_text(value: object) -> str:
+    """
+    Like normalise_text(), but for reference/identifier fields (bank
+    reference numbers, e.g. "Viite"/"Viitenumero") that can get read as a
+    numeric dtype despite being an opaque digit string, not a real number.
+    A long integer (a bank reference number can run well past float64's
+    ~15-16 significant digits of precision) stored in a spreadsheet cell is
+    often inferred as float64 by pandas; Python's default str() on that
+    float renders it in lossy scientific notation instead of the exact
+    digits. Since a reference feeds directly into RawID hashing, the SAME
+    real transaction can hash differently between two imports depending on
+    which dtype pandas happened to infer that time, silently defeating
+    de-duplication. Real bug this fixed: a real dry-run found the same real
+    transaction imported twice, months apart, for exactly this reason.
+    """
+    if isinstance(value, float):
+        try:
+            if value.is_integer():
+                return str(int(value))
+        except (ValueError, OverflowError):
+            pass
+    return normalise_text(value)
+
+
 def clean_for_excel(value: object) -> object:
     if value is None or pd.isna(value):
         return ""
