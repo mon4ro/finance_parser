@@ -121,3 +121,47 @@ def test_example_settings_has_no_portfolio_type_leak_risk():
     )
 
     assert settings.get("investments", "portfolio_types", default={}) == {}
+
+
+def test_settings_account_balance_seeds_sorted_oldest_first(tmp_path):
+    settings_path = tmp_path / "settings.yaml"
+    settings_path.write_text(
+        """
+budgeting:
+  account_balance_seeds:
+    HOUSEHOLD:
+      "2024-06-01": 500.0
+      "2023-01-15": 100.0
+""",
+        encoding="utf-8",
+    )
+    settings = AppSettings.load(settings_path=settings_path, example_path=DEFAULT_EXAMPLE_SETTINGS_PATH)
+
+    assert settings.account_balance_seeds("HOUSEHOLD") == [
+        ("2023-01-15", 100.0),
+        ("2024-06-01", 500.0),
+    ]
+
+
+def test_settings_account_balance_seeds_unknown_account_returns_empty(tmp_path):
+    settings_path = tmp_path / "settings.yaml"
+    settings_path.write_text("budgeting:\n  account_balance_seeds: {}\n", encoding="utf-8")
+    settings = AppSettings.load(settings_path=settings_path, example_path=DEFAULT_EXAMPLE_SETTINGS_PATH)
+
+    assert settings.account_balance_seeds("SOME_UNCONFIGURED_ACCOUNT") == []
+
+
+def test_example_settings_has_no_account_balance_seeds_leak_risk():
+    """
+    Same real incident class as portfolio_types above: account_balance_seeds
+    in the example file must stay absent/empty - a real-looking example
+    value here would silently apply to every deployment's real balance
+    calculation unless that deployment happens to override the exact same
+    account key.
+    """
+    settings = AppSettings.load(
+        settings_path=Path("does-not-exist-user-settings.yaml"),
+        example_path=DEFAULT_EXAMPLE_SETTINGS_PATH,
+    )
+
+    assert settings.get("budgeting", "account_balance_seeds", default={}) == {}

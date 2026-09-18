@@ -102,6 +102,42 @@ def test_dividend_stages_included_when_history_path_given():
     assert names.index("dividend income enrichment") < names.index("transaction categoriser")
 
 
+def test_account_balance_stage_included_when_workbook_path_given():
+    commands = pipeline.build_pipeline_commands(
+        python_executable="python",
+        input_path=Path("input/budgeting"),
+        workbook_path=Path("output/budgeting/ParsedTransactions.xlsx"),
+        rules_path=Path("rules/budgeting/TransactionRules.xlsx"),
+        balance_workbook_path=Path("output/budgeting/MonthlyAccountBalance.xlsx"),
+    )
+
+    assert [command.name for command in commands][-1] == "monthly account balance"
+
+
+def test_account_balance_stage_skipped_when_flag_set():
+    commands = pipeline.build_pipeline_commands(
+        python_executable="python",
+        input_path=Path("input/budgeting"),
+        workbook_path=Path("output/budgeting/ParsedTransactions.xlsx"),
+        rules_path=Path("rules/budgeting/TransactionRules.xlsx"),
+        balance_workbook_path=Path("output/budgeting/MonthlyAccountBalance.xlsx"),
+        skip_account_balance=True,
+    )
+
+    assert "monthly account balance" not in [c.name for c in commands]
+
+
+def test_account_balance_stage_omitted_when_no_path_given():
+    commands = pipeline.build_pipeline_commands(
+        python_executable="python",
+        input_path=Path("input/budgeting"),
+        workbook_path=Path("output/budgeting/ParsedTransactions.xlsx"),
+        rules_path=Path("rules/budgeting/TransactionRules.xlsx"),
+    )
+
+    assert "monthly account balance" not in [c.name for c in commands]
+
+
 def test_dividend_stages_skipped_when_history_path_omitted():
     commands = pipeline.build_pipeline_commands(
         python_executable="python",

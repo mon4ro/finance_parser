@@ -97,6 +97,14 @@ UNIFIED_COLUMNS = [
     "ExportDate",
     "ImportedAt",
     "SourceFile",
+    # Appended, not inserted mid-list - see the same column-order lesson
+    # applied on the investment side (build_monthly_position_value.py).
+    # Real per-transaction running balance - only Nordea's raw export
+    # actually populates this (its own "Saldo" field); every other bank's
+    # parser leaves it blank. Was already part of RAW_COLUMNS and correctly
+    # populated there, but never carried through to UnifiedTransactions
+    # until build_monthly_account_balance.py needed it.
+    "Balance",
 ]
 
 IMPORT_LOG_COLUMNS = [
@@ -600,6 +608,7 @@ def raw_to_unified_rows(raw_new: pd.DataFrame) -> pd.DataFrame:
             "ExportDate": row["ExportDate"],
             "ImportedAt": row["ImportedAt"],
             "SourceFile": row["SourceFile"],
+            "Balance": row.get("Balance", ""),
         })
 
     return pd.DataFrame(rows, columns=UNIFIED_COLUMNS)

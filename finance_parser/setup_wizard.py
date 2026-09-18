@@ -9,9 +9,19 @@ from typing import Any
 import pandas as pd
 import yaml
 
+from finance_parser.budgeting.account_balance_seed import (
+    DEFAULT_BUDGETING_WORKBOOK,
+    accounts_needing_seed,
+    collect_account_balance_seed,
+)
 from finance_parser.budgeting.transaction_parser import SUPPORTED_PARSERS as BUDGETING_PARSER_MODULES
 from finance_parser.investments.investment_parser import SUPPORTED_INVESTMENT_PARSERS as INVESTMENT_PARSER_MODULES
-from finance_parser.settings import _deep_merge
+from finance_parser.settings import AppSettings, _deep_merge
+# ask/ask_yes_no/ask_multi_select re-exported for this module's existing
+# call sites/tests - the implementations live in interactive_prompts.py so
+# finance_parser.budgeting.account_balance_seed can use them too, without an
+# awkward import from this top-level orchestration module.
+from finance_parser.utilities.interactive_prompts import ask, ask_multi_select, ask_yes_no
 from finance_parser.utilities.fresh_workbook_writer import (
     read_workbook_values_only,
     records_to_sheet_values,
@@ -65,38 +75,6 @@ def budgeting_broker_names() -> list[str]:
 
 def investment_broker_names() -> list[str]:
     return sorted({module.BROKER for module in INVESTMENT_PARSER_MODULES})
-
-
-def ask(prompt: str, *, default: str | None = None) -> str:
-    suffix = f" [{default}]" if default else ""
-    raw = input(f"{prompt}{suffix}: ").strip()
-    return raw if raw else (default or "")
-
-
-def ask_yes_no(prompt: str, *, default: bool = False) -> bool:
-    hint = "Y/n" if default else "y/N"
-    raw = input(f"{prompt} [{hint}]: ").strip().lower()
-    if not raw:
-        return default
-    return raw in {"y", "yes"}
-
-
-def ask_multi_select(options: list[str]) -> list[str]:
-    for i, option in enumerate(options, start=1):
-        print(f"  {i}. {option}")
-    raw = input("Enter numbers separated by commas (blank for none): ").strip()
-    if not raw:
-        return []
-
-    chosen: list[str] = []
-    for part in raw.split(","):
-        part = part.strip()
-        if not part.isdigit():
-            continue
-        index = int(part) - 1
-        if 0 <= index < len(options):
-            chosen.append(options[index])
-    return chosen
 
 
 def choose_scope() -> set[str]:
@@ -512,6 +490,7 @@ def run_wizard(
     settings_path: Path = DEFAULT_SETTINGS_PATH,
     budgeting_template: Path = DEFAULT_BUDGETING_TEMPLATE,
     budgeting_rules: Path = DEFAULT_BUDGETING_RULES,
+    budgeting_workbook: Path = DEFAULT_BUDGETING_WORKBOOK,
     investment_template: Path = DEFAULT_INVESTMENT_TEMPLATE,
     investment_rules: Path = DEFAULT_INVESTMENT_RULES,
     dry_run: bool = False,
@@ -550,6 +529,31 @@ def run_wizard(
         )
         if use_cash:
             print("Good - the CASH source parser is already available, no extra settings needed for it.")
+
+        seedable = accounts_needing_seed(budgeting_workbook)
+        if seedable:
+            print()
+            print(
+                "Some of your budgeting accounts don't have a running balance in their own "
+                "export - you can seed a starting balance now so monthly account balances can "
+                "be tracked (see build_monthly_account_balance.py). Skip this anytime and run "
+                "python seed_account_balance.py later instead."
+            )
+            if ask_yes_no("Seed an account balance now?", default=False):
+                existing_app_settings = AppSettings(existing_settings)
+                for i, account in enumerate(seedable):
+                    existing_seeds = existing_app_settings.account_balance_seeds(account)
+                    collect_account_balance_seed(
+                        overrides,
+                        account,
+                        budgeting_workbook=budgeting_workbook,
+                        existing_seeds=existing_seeds,
+                    )
+                    remaining = len(seedable) - i - 1
+                    if remaining == 0:
+                        break
+                    if not ask_yes_no(f"Seed another account ({remaining} more available)?", default=False):
+                        break
 
         unsupported.extend(
             collect_unsupported("Any other banks you use that weren't listed? (comma-separated, blank to skip)")

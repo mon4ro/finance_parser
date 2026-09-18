@@ -383,6 +383,7 @@ def test_run_wizard_dry_run_never_touches_real_default_paths(tmp_path, monkeypat
         settings_path=sandbox_settings,
         budgeting_template=tmp_path / "missing_template.xlsx",
         budgeting_rules=sandbox_budgeting_rules,
+        budgeting_workbook=tmp_path / "does_not_exist_ParsedTransactions.xlsx",
         investment_template=tmp_path / "missing_template2.xlsx",
         investment_rules=sandbox_investment_rules,
         dry_run=True,

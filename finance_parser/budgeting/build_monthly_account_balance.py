@@ -1,0 +1,262 @@
+from __future__ import annotations
+
+import argparse
+from datetime import date
+from pathlib import Path
+
+import pandas as pd
+
+from finance_parser.budgeting.account_balance_seed import (
+    BALANCE_FROM_RAW_EXPORT_BANKS,
+    DEFAULT_BUDGETING_WORKBOOK,
+    EXCLUDED_SOURCE_ACCOUNTS,
+    load_unified_transactions,
+)
+from finance_parser.common import normalise_text
+from finance_parser.settings import AppSettings, get_settings
+from finance_parser.utilities.fresh_workbook_writer import (
+    records_to_sheet_values,
+    replace_with_fresh_workbook,
+    write_fresh_workbook,
+)
+
+
+PROJECT_ROOT = Path(__file__).resolve().parents[2]
+DEFAULT_OUTPUT_WORKBOOK = PROJECT_ROOT / "output" / "budgeting" / "MonthlyAccountBalance.xlsx"
+
+MONTHLY_BALANCE_SHEET = "MonthlyAccountBalance"
+MONTHLY_BALANCE_COLUMNS = ["MonthEnd", "Year", "Month", "SourceAccount", "Owner", "Balance", "BalanceSource"]
+
+RAW_EXPORT_SOURCE = "RAW_EXPORT"
+RECONSTRUCTED_SOURCE = "RECONSTRUCTED"
+
+
+def last_completed_month_end(today: date) -> pd.Timestamp:
+    first_of_this_month = pd.Timestamp(today).replace(day=1)
+    return first_of_this_month - pd.Timedelta(days=1)
+
+
+def month_end_dates(first_date: pd.Timestamp, last_month_end: pd.Timestamp) -> pd.DatetimeIndex:
+    if first_date > last_month_end:
+        return pd.DatetimeIndex([])
+    return pd.date_range(start=first_date, end=last_month_end, freq="ME")
+
+
+def _account_owner(group: pd.DataFrame) -> str:
+    owners = group["Owner"].map(normalise_text)
+    non_blank = owners[owners != ""]
+    return non_blank.iloc[0] if len(non_blank) > 0 else ""
+
+
+def _raw_export_balance_rows(account: str, group: pd.DataFrame, months: pd.DatetimeIndex) -> list[dict]:
+    """
+    Account whose bank export already carries its own running balance
+    (Nordea's real "Saldo" field) - use it directly, merge-backward to each
+    month-end, same pattern as Nordnet's investment cash-balance tracking.
+    """
+    balance_source = group.dropna(subset=["_Balance"])[["_Date", "_Balance"]].sort_values("_Date")
+    if len(balance_source) == 0:
+        return []
+
+    candidates = pd.DataFrame({"MonthEnd": months})
+    merged = pd.merge_asof(
+        candidates, balance_source, left_on="MonthEnd", right_on="_Date", direction="backward"
+    )
+    merged = merged.dropna(subset=["_Balance"])
+
+    owner = _account_owner(group)
+    rows = []
+    for _, r in merged.iterrows():
+        month_end = r["MonthEnd"]
+        rows.append({
+            "MonthEnd": month_end.strftime("%Y-%m-%d"),
+            "Year": month_end.year,
+            "Month": month_end.month,
+            "SourceAccount": account,
+            "Owner": owner,
+            "Balance": round(float(r["_Balance"]), 2),
+            "BalanceSource": RAW_EXPORT_SOURCE,
+        })
+    return rows
+
+
+def _reconstructed_balance_rows(
+    account: str, group: pd.DataFrame, months: pd.DatetimeIndex, seeds: list[tuple[str, float]]
+) -> list[dict]:
+    """
+    Account with no running balance of its own - reconstructed by cumsum of
+    real Amount from the most recent seed at-or-before each month-end. A
+    seed's date is always end-of-day (see account_balance_seed.py's
+    collector), so only transactions STRICTLY after it are summed - same-day
+    transactions are already reflected in the seed itself, never double
+    counted once they're imported.
+    """
+    if not seeds:
+        return []
+
+    seed_dates = [pd.Timestamp(d) for d, _ in seeds]
+    rows = []
+    owner = _account_owner(group)
+
+    for month_end in months:
+        applicable = [(d, b) for d, b in zip(seed_dates, [bal for _, bal in seeds]) if d <= month_end]
+        if not applicable:
+            continue
+        seed_date, seed_balance = applicable[-1]
+
+        later_transactions = group[(group["_Date"] > seed_date) & (group["_Date"] <= month_end)]
+        balance = seed_balance + later_transactions["_Amount"].sum()
+
+        rows.append({
+            "MonthEnd": month_end.strftime("%Y-%m-%d"),
+            "Year": month_end.year,
+            "Month": month_end.month,
+            "SourceAccount": account,
+            "Owner": owner,
+            "Balance": round(float(balance), 2),
+            "BalanceSource": RECONSTRUCTED_SOURCE,
+        })
+
+    return rows
+
+
+def build_monthly_balances(
+    budgeting_workbook: Path = DEFAULT_BUDGETING_WORKBOOK,
+    settings: AppSettings | None = None,
+    *,
+    as_of: date | None = None,
+) -> tuple[pd.DataFrame, dict[str, object]]:
+    settings = settings or get_settings()
+    df = load_unified_transactions(budgeting_workbook)
+
+    stats: dict[str, object] = {
+        "accounts_processed": [],
+        "accounts_no_seed_configured": [],
+        "accounts_raw_export_no_balance_data": [],
+    }
+
+    if len(df) == 0:
+        return pd.DataFrame(columns=MONTHLY_BALANCE_COLUMNS), stats
+
+    df["_Amount"] = pd.to_numeric(df["Amount"], errors="coerce").fillna(0.0)
+    if "Balance" in df.columns:
+        df["_Balance"] = pd.to_numeric(df["Balance"], errors="coerce")
+    else:
+        df["_Balance"] = pd.NA
+
+    last_month_end = last_completed_month_end(as_of or date.today())
+    rows: list[dict] = []
+
+    for account, group in df.groupby("SourceAccount"):
+        if not account or account in EXCLUDED_SOURCE_ACCOUNTS:
+            continue
+
+        group = group[group["_Date"].notna()].sort_values("_Date")
+        if len(group) == 0:
+            continue
+
+        banks = set(group["SourceBank"].unique())
+        is_raw_export_account = bool(banks) and banks.issubset(BALANCE_FROM_RAW_EXPORT_BANKS)
+
+        if is_raw_export_account:
+            months = month_end_dates(group["_Date"].iloc[0], last_month_end)
+            account_rows = _raw_export_balance_rows(account, group, months)
+            if account_rows:
+                stats["accounts_processed"].append(account)
+            else:
+                # A bank in BALANCE_FROM_RAW_EXPORT_BANKS is expected to
+                # populate Balance - flag rather than silently produce zero
+                # rows if it turns out not to for this account (real case
+                # this caught: Balance existed at the raw layer but wasn't
+                # yet carried through to UnifiedTransactions at all).
+                stats["accounts_raw_export_no_balance_data"].append(account)
+            rows.extend(account_rows)
+            continue
+
+        seeds = settings.account_balance_seeds(account)
+        if not seeds:
+            stats["accounts_no_seed_configured"].append(account)
+            continue
+
+        earliest_seed = pd.Timestamp(seeds[0][0])
+        months = month_end_dates(earliest_seed, last_month_end)
+        account_rows = _reconstructed_balance_rows(account, group, months, seeds)
+        if account_rows:
+            stats["accounts_processed"].append(account)
+        rows.extend(account_rows)
+
+    result = pd.DataFrame(rows, columns=MONTHLY_BALANCE_COLUMNS)
+    if len(result) > 0:
+        result = result.sort_values(["SourceAccount", "MonthEnd"]).reset_index(drop=True)
+
+    return result, stats
+
+
+def write_monthly_balance_workbook(output_workbook: Path, monthly_balances: pd.DataFrame) -> None:
+    sheets = {MONTHLY_BALANCE_SHEET: records_to_sheet_values(MONTHLY_BALANCE_COLUMNS, monthly_balances.to_dict("records"))}
+
+    if output_workbook.exists():
+        replace_with_fresh_workbook(
+            output_workbook,
+            sheets,
+            backup_label="before_account_balance_rebuild",
+            basic_formatting=True,
+            excel_tables=False,
+        )
+    else:
+        write_fresh_workbook(output_workbook, sheets, basic_formatting=True, excel_tables=False)
+
+
+def build_arg_parser() -> argparse.ArgumentParser:
+    parser = argparse.ArgumentParser(
+        description="Build a monthly end-of-month balance per budgeting account - budgeting's "
+                    "equivalent of the investment side's MonthlyPositionValue.xlsx. Nordea uses "
+                    "its own real running balance; other accounts reconstruct from a manually "
+                    "seeded balance (see seed_account_balance.py) plus real transactions since."
+    )
+    parser.add_argument("--budgeting-workbook", default=str(DEFAULT_BUDGETING_WORKBOOK))
+    parser.add_argument("--output-workbook", default=str(DEFAULT_OUTPUT_WORKBOOK))
+    parser.add_argument("--dry-run", action="store_true", help="Compute and report, but do not write the workbook.")
+    return parser
+
+
+def main() -> None:
+    args = build_arg_parser().parse_args()
+
+    budgeting_workbook = Path(args.budgeting_workbook).expanduser().resolve()
+    output_workbook = Path(args.output_workbook).expanduser().resolve()
+
+    monthly_balances, stats = build_monthly_balances(budgeting_workbook)
+
+    print()
+    print("Monthly account balance build complete." if not args.dry_run else "Monthly account balance dry run complete.")
+    print(f"Accounts with a monthly balance: {len(stats['accounts_processed'])}")
+    for account in stats["accounts_processed"]:
+        print(f"  - {account}")
+
+    if stats["accounts_no_seed_configured"]:
+        print()
+        print("Accounts with no balance seed configured yet (no monthly rows produced):")
+        for account in stats["accounts_no_seed_configured"]:
+            print(f"  - {account}")
+        print("Run python seed_account_balance.py to add one.")
+
+    if stats["accounts_raw_export_no_balance_data"]:
+        print()
+        print("Accounts expected to have a real running balance in their own export, but none")
+        print("found (no monthly rows produced) - check the raw export actually has it:")
+        for account in stats["accounts_raw_export_no_balance_data"]:
+            print(f"  - {account}")
+
+    if args.dry_run:
+        print()
+        print("Dry run only: workbook was not modified.")
+        return
+
+    write_monthly_balance_workbook(output_workbook, monthly_balances)
+    print()
+    print(f"Output workbook: {output_workbook}")
+
+
+if __name__ == "__main__":
+    main()

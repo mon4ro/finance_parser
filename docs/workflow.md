@@ -45,9 +45,20 @@ The pipeline runs:
    against their real bank deposit - also auto-skipped if DividendHistory.xlsx
    doesn't exist)
 5. transaction categoriser
+6. monthly account balance rollup
 ```
 
 Pass `--skip-dividends` to disable steps 2 and 4 explicitly.
+
+Step 6 builds a monthly end-of-month balance per budgeting account
+(`output/budgeting/MonthlyAccountBalance.xlsx`) - the budgeting-side equivalent of the
+investment side's `MonthlyPositionValue.xlsx`, feeding a monthly net worth view.
+Nordea's own export already carries a real running balance, used directly for its
+accounts. Every other account needs a one-time "balance as of this date" seed first -
+run `python seed_account_balance.py`, or answer the setup wizard's optional prompt for
+it. An account with no seed configured yet just produces no monthly rows for itself
+(reported clearly in the step's output, not silently guessed or dropped). Pass
+`--skip-account-balance` to disable step 6.
 
 ## Budgeting dry-run workflow
 
@@ -74,6 +85,7 @@ python -m finance_parser.budgeting.transaction_parser
 python -m finance_parser.budgeting.transaction_normaliser
 python -m finance_parser.budgeting.enrich_dividend_income
 python -m finance_parser.budgeting.transaction_categoriser
+python -m finance_parser.budgeting.build_monthly_account_balance
 ```
 
 Individual dry-run commands:

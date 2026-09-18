@@ -197,6 +197,29 @@ class AppSettings:
     def portfolio_type(self, broker: object, portfolio: object) -> str:
         return self._portfolio_setting("portfolio_types", broker, portfolio)
 
+    def account_balance_seeds(self, source_account: object) -> list[tuple[str, float]]:
+        """
+        Manually-entered "balance as of this date" anchor points for a
+        budgeting SourceAccount - budgeting's equivalent of investments'
+        OpeningPositions, for banks whose export carries no running balance
+        of its own (see build_monthly_account_balance.py). Sorted oldest
+        first. A date is always end-of-day - the balance after the LAST
+        transaction that posted that day, never a mid-day snapshot.
+        """
+        account_key = _normalise_key(source_account)
+        config = self.get("budgeting", "account_balance_seeds", account_key, default=None)
+        if not isinstance(config, dict):
+            return []
+
+        seeds: list[tuple[str, float]] = []
+        for date_str, balance in config.items():
+            try:
+                seeds.append((str(date_str), float(balance)))
+            except (TypeError, ValueError):
+                continue
+
+        return sorted(seeds, key=lambda pair: pair[0])
+
 
 _SETTINGS_CACHE: AppSettings | None = None
 

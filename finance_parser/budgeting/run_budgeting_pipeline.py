@@ -18,6 +18,7 @@ BUDGETING_RULES_DIR = PROJECT_ROOT / "rules" / "budgeting"
 DEFAULT_INPUT_PATH = BUDGETING_INPUT_DIR
 DEFAULT_WORKBOOK = BUDGETING_OUTPUT_DIR / "ParsedTransactions.xlsx"
 DEFAULT_RULES = BUDGETING_RULES_DIR / "TransactionRules.xlsx"
+DEFAULT_BALANCE_WORKBOOK = BUDGETING_OUTPUT_DIR / "MonthlyAccountBalance.xlsx"
 # Read-only cross-pipeline input, not owned by this pipeline - see
 # investment_dividends.py (Nordnet/EVLI synthetic dividend income, no
 # matching bank transaction exists) and enrich_dividend_income.py (OP-held
@@ -93,6 +94,16 @@ def build_arg_parser() -> argparse.ArgumentParser:
         help="Skip both dividend-income stages (useful if the investment pipeline hasn't been "
              "run yet, or DividendHistory.xlsx doesn't exist).",
     )
+    parser.add_argument(
+        "--balance-workbook",
+        default=str(DEFAULT_BALANCE_WORKBOOK),
+        help="Monthly account balance output. Defaults to output/budgeting/MonthlyAccountBalance.xlsx.",
+    )
+    parser.add_argument(
+        "--skip-account-balance",
+        action="store_true",
+        help="Skip the monthly account balance stage.",
+    )
     return parser
 
 
@@ -129,6 +140,8 @@ def build_pipeline_commands(
     verbose: bool = False,
     dividend_history_path: Path | None = None,
     skip_dividends: bool = False,
+    balance_workbook_path: Path | None = None,
+    skip_account_balance: bool = False,
 ) -> list[PipelineCommand]:
     parser_cmd = [
         python_executable,
@@ -194,6 +207,16 @@ def build_pipeline_commands(
         str(rules_path),
     ]
 
+    balance_cmd = [
+        python_executable,
+        "-m",
+        "finance_parser.budgeting.build_monthly_account_balance",
+        "--budgeting-workbook",
+        str(workbook_path),
+        "--output-workbook",
+        str(balance_workbook_path),
+    ]
+
     run_dividend_stages = not skip_dividends and dividend_history_path is not None
 
     commands = [PipelineCommand("transaction parser", parser_cmd)]
@@ -203,6 +226,8 @@ def build_pipeline_commands(
     if run_dividend_stages:
         commands.append(PipelineCommand("dividend income enrichment", dividend_enrich_cmd))
     commands.append(PipelineCommand("transaction categoriser", categoriser_cmd))
+    if not skip_account_balance and balance_workbook_path is not None:
+        commands.append(PipelineCommand("monthly account balance", balance_cmd))
     return commands
 
 
@@ -216,6 +241,7 @@ def run_pipeline(args: argparse.Namespace) -> int:
     input_path = Path(args.input).expanduser().resolve()
     real_workbook = Path(args.workbook).expanduser().resolve()
     rules_path = Path(args.rules).expanduser().resolve()
+    real_balance_workbook = Path(args.balance_workbook).expanduser().resolve()
 
     BUDGETING_INPUT_DIR.mkdir(parents=True, exist_ok=True)
     BUDGETING_OUTPUT_DIR.mkdir(parents=True, exist_ok=True)
@@ -225,10 +251,14 @@ def run_pipeline(args: argparse.Namespace) -> int:
         raise ValueError("--keep-temp can only be used together with --dry-run")
 
     workbook_for_run = real_workbook
+    balance_workbook_for_run = real_balance_workbook
     temp_dir: Path | None = None
 
     if args.dry_run:
         workbook_for_run, temp_dir = prepare_dry_run_workbook(real_workbook)
+        balance_workbook_for_run = temp_dir / real_balance_workbook.name
+        if real_balance_workbook.exists():
+            shutil.copy2(real_balance_workbook, balance_workbook_for_run)
         print("Budgeting pipeline dry-run.")
         print("The real workbook will not be modified.")
         print(f"Real workbook:      {real_workbook}")
@@ -254,6 +284,8 @@ def run_pipeline(args: argparse.Namespace) -> int:
         verbose=args.verbose,
         dividend_history_path=dividend_history_path,
         skip_dividends=skip_dividends,
+        balance_workbook_path=balance_workbook_for_run,
+        skip_account_balance=args.skip_account_balance,
     )
 
     try:

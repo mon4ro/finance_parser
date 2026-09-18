@@ -63,6 +63,48 @@ def test_raw_to_unified_leaves_normalized_receiver_blank():
     assert row["Include"] == "YES"
 
 
+def test_raw_to_unified_carries_balance_through(tmp_path):
+    """
+    Real bug found and fixed: Balance (Nordea's real running balance, "Saldo"
+    in its raw export) was already part of RAW_COLUMNS and correctly
+    populated at the raw layer, but never carried through to
+    UnifiedTransactions at all - build_monthly_account_balance.py needs it.
+    """
+    raw = pd.DataFrame([{
+        "RawID": "RAW-1",
+        "SourceAccount": "PERSONAL",
+        "SourceBank": "NORDEA",
+        "BookingDate": "2026-06-01",
+        "ValueDate": "2026-06-01",
+        "Amount": -10.0,
+        "TransactionTypeRaw": "KORTTIOSTO",
+        "Description": "KORTTIOSTO",
+        "RawReceiver": "Prisma",
+        "ReceiverAccount": "",
+        "ReceiverBankBIC": "",
+        "Reference": "",
+        "Message": "",
+        "ArchiveID": "123",
+        "Balance": 456.78,
+        "CurrencyAmount": "",
+        "Currency": "EUR",
+        "Rate": 1,
+        "MerchantArea": "",
+        "MerchantCategory": "",
+        "ExportDate": "2026-06-01",
+        "ImportedAt": "2026-06-04 12:00:00",
+        "SourceFile": "PERSONAL_export.csv",
+    }])
+
+    for col in RAW_COLUMNS:
+        if col not in raw.columns:
+            raw[col] = ""
+
+    unified = raw_to_unified_rows(raw[RAW_COLUMNS])
+
+    assert unified.iloc[0]["Balance"] == 456.78
+
+
 def test_raw_to_unified_spankki_include_default_from_settings():
     raw = pd.DataFrame([{
         "RawID": "SPK-1",
