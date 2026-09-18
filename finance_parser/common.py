@@ -1015,6 +1015,7 @@ def read_xlsx_xml_direct(path: Path, required_columns: list[str] | None = None) 
             return "".join(parts)
 
         diagnostics = []
+        candidates: list[tuple[str, pd.DataFrame, int]] = []
         best_df = None
         best_score = -1
         best_sheet = None
@@ -1107,6 +1108,7 @@ def read_xlsx_xml_direct(path: Path, required_columns: list[str] | None = None) 
                 f"candidate_score={score}, columns={list(candidate.columns)[:30]}"
             )
 
+            candidates.append((sheet_name, candidate, score))
             if score > best_score:
                 best_score = score
                 best_df = candidate
@@ -1126,8 +1128,38 @@ def read_xlsx_xml_direct(path: Path, required_columns: list[str] | None = None) 
                 + "\n".join("  - " + d for d in diagnostics)
             )
 
-        print(f"Read {path.name} by namespace-agnostic direct XLSX XML fallback from {best_sheet}")
-        return best_df
+        # A real multi-sheet export can legitimately split one account's
+        # whole history across several sheets with the identical column
+        # layout (e.g. a "current year" sheet plus one sheet per historical
+        # year) - merge every sheet that matches the SAME column set as the
+        # best one, not just keep the single best-scoring sheet. Real bug
+        # this fixed: a genuine 5-sheet OP export silently lost an entire
+        # year's worth of real transactions (an otherwise-valid sheet with
+        # its own header and ~1500 real rows), because only the single
+        # best-matching sheet was ever kept - found via a real dry-run.
+        qualifying_threshold = min(3, len(required_columns)) if required_columns else best_score
+        merged_sheets = [best_sheet]
+        frames = [best_df]
+        for sheet_name, candidate, score in candidates:
+            if sheet_name == best_sheet:
+                continue
+            if required_columns and score < qualifying_threshold:
+                continue
+            if set(candidate.columns) != set(best_df.columns):
+                continue
+            frames.append(candidate.reindex(columns=best_df.columns))
+            merged_sheets.append(sheet_name)
+
+        result = pd.concat(frames, ignore_index=True) if len(frames) > 1 else best_df
+
+        if len(merged_sheets) > 1:
+            print(
+                f"Read {path.name} by namespace-agnostic direct XLSX XML fallback, "
+                f"merging {len(merged_sheets)} matching sheets: {', '.join(merged_sheets)}"
+            )
+        else:
+            print(f"Read {path.name} by namespace-agnostic direct XLSX XML fallback from {best_sheet}")
+        return result
 
 
 def read_excel_guess(path: Path) -> pd.DataFrame:
