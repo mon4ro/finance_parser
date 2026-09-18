@@ -4,25 +4,27 @@ from finance_parser.budgeting.account_balance_seed import (
     accounts_needing_seed,
     collect_account_balance_seed,
     latest_imported_date,
-    load_unified_transactions,
+    load_raw_transactions,
+    owner_lookup,
 )
 
 
-UNIFIED_COLUMNS = [
-    "UnifiedID", "RawID", "SourceAccount", "SourceBank", "TransactionType",
-    "Date", "Month", "Year", "Amount", "RawReceiver", "NormalizedReceiver",
-    "Description", "Message", "Include", "Owner", "Supercategory",
-    "Category", "Subcategory", "ReviewStatus", "Review/Notes",
+RAW_COLUMNS = [
+    "RawID", "SourceAccount", "SourceBank", "ExportDate", "ImportedAt",
+    "BookingDate", "ValueDate", "Amount", "TransactionTypeRaw", "Description",
+    "RawReceiver", "ReceiverAccount", "ReceiverBankBIC", "Reference", "Message",
+    "ArchiveID", "Balance", "CurrencyAmount", "Currency", "Rate",
+    "MerchantArea", "MerchantCategory", "SourceFile",
 ]
 
 
-def _write_unified(path, rows):
+def _write_raw(path, rows):
     wb = Workbook()
     ws = wb.active
-    ws.title = "UnifiedTransactions"
-    ws.append(UNIFIED_COLUMNS)
+    ws.title = "RawTransactions"
+    ws.append(RAW_COLUMNS)
     for row in rows:
-        ws.append([row.get(h, "") for h in UNIFIED_COLUMNS])
+        ws.append([row.get(h, "") for h in RAW_COLUMNS])
     wb.save(path)
 
 
@@ -39,11 +41,11 @@ def _feed(monkeypatch, answers):
 
 def test_accounts_needing_seed_excludes_cash_and_nordea_only_accounts(tmp_path):
     path = tmp_path / "ParsedTransactions.xlsx"
-    _write_unified(path, [
-        {"SourceAccount": "HOUSEHOLD", "SourceBank": "OP", "Date": "2026-01-01", "Amount": -10},
-        {"SourceAccount": "PERSONAL", "SourceBank": "NORDEA", "Date": "2026-01-01", "Amount": -10},
-        {"SourceAccount": "CASH", "SourceBank": "CASH", "Date": "2026-01-01", "Amount": -10},
-        {"SourceAccount": "SPANKKI", "SourceBank": "SPANKKI", "Date": "2026-01-01", "Amount": -10},
+    _write_raw(path, [
+        {"RawID": "R-1", "SourceAccount": "HOUSEHOLD", "SourceBank": "OP", "BookingDate": "2026-01-01", "Amount": -10},
+        {"RawID": "R-2", "SourceAccount": "PERSONAL", "SourceBank": "NORDEA", "BookingDate": "2026-01-01", "Amount": -10},
+        {"RawID": "R-3", "SourceAccount": "CASH", "SourceBank": "CASH", "BookingDate": "2026-01-01", "Amount": -10},
+        {"RawID": "R-4", "SourceAccount": "SPANKKI", "SourceBank": "SPANKKI", "BookingDate": "2026-01-01", "Amount": -10},
     ])
 
     accounts = accounts_needing_seed(path)
@@ -59,9 +61,9 @@ def test_accounts_needing_seed_keeps_account_mixing_nordea_with_another_bank(tmp
     the whole account.
     """
     path = tmp_path / "ParsedTransactions.xlsx"
-    _write_unified(path, [
-        {"SourceAccount": "MIXED", "SourceBank": "OP", "Date": "2026-01-01", "Amount": -10},
-        {"SourceAccount": "MIXED", "SourceBank": "NORDEA", "Date": "2026-01-02", "Amount": -10},
+    _write_raw(path, [
+        {"RawID": "R-1", "SourceAccount": "MIXED", "SourceBank": "OP", "BookingDate": "2026-01-01", "Amount": -10},
+        {"RawID": "R-2", "SourceAccount": "MIXED", "SourceBank": "NORDEA", "BookingDate": "2026-01-02", "Amount": -10},
     ])
 
     assert accounts_needing_seed(path) == ["MIXED"]
@@ -74,10 +76,10 @@ def test_accounts_needing_seed_empty_workbook_returns_empty(tmp_path):
 
 def test_latest_imported_date_returns_max_date_for_account(tmp_path):
     path = tmp_path / "ParsedTransactions.xlsx"
-    _write_unified(path, [
-        {"SourceAccount": "HOUSEHOLD", "SourceBank": "OP", "Date": "2026-01-01", "Amount": -10},
-        {"SourceAccount": "HOUSEHOLD", "SourceBank": "OP", "Date": "2026-03-15", "Amount": -20},
-        {"SourceAccount": "OTHER", "SourceBank": "OP", "Date": "2026-06-01", "Amount": -30},
+    _write_raw(path, [
+        {"RawID": "R-1", "SourceAccount": "HOUSEHOLD", "SourceBank": "OP", "BookingDate": "2026-01-01", "Amount": -10},
+        {"RawID": "R-2", "SourceAccount": "HOUSEHOLD", "SourceBank": "OP", "BookingDate": "2026-03-15", "Amount": -20},
+        {"RawID": "R-3", "SourceAccount": "OTHER", "SourceBank": "OP", "BookingDate": "2026-06-01", "Amount": -30},
     ])
 
     assert latest_imported_date("HOUSEHOLD", path).isoformat() == "2026-03-15"
@@ -85,14 +87,14 @@ def test_latest_imported_date_returns_max_date_for_account(tmp_path):
 
 def test_latest_imported_date_no_transactions_returns_none(tmp_path):
     path = tmp_path / "ParsedTransactions.xlsx"
-    _write_unified(path, [])
+    _write_raw(path, [])
     assert latest_imported_date("HOUSEHOLD", path) is None
 
 
 def test_collect_account_balance_seed_writes_to_overrides(tmp_path, monkeypatch):
     path = tmp_path / "ParsedTransactions.xlsx"
-    _write_unified(path, [
-        {"SourceAccount": "HOUSEHOLD", "SourceBank": "OP", "Date": "2026-03-15", "Amount": -10},
+    _write_raw(path, [
+        {"RawID": "R-1", "SourceAccount": "HOUSEHOLD", "SourceBank": "OP", "BookingDate": "2026-03-15", "Amount": -10},
     ])
     _feed(monkeypatch, ["", "1234.56"])  # accept default date, then balance
     overrides = {}
@@ -105,8 +107,8 @@ def test_collect_account_balance_seed_writes_to_overrides(tmp_path, monkeypatch)
 
 def test_collect_account_balance_seed_future_date_requires_explicit_confirmation(tmp_path, monkeypatch):
     path = tmp_path / "ParsedTransactions.xlsx"
-    _write_unified(path, [
-        {"SourceAccount": "HOUSEHOLD", "SourceBank": "OP", "Date": "2026-03-15", "Amount": -10},
+    _write_raw(path, [
+        {"RawID": "R-1", "SourceAccount": "HOUSEHOLD", "SourceBank": "OP", "BookingDate": "2026-03-15", "Amount": -10},
     ])
     _feed(monkeypatch, ["2026-04-01", "n"])  # later date, decline the warning
     overrides = {}
@@ -119,8 +121,8 @@ def test_collect_account_balance_seed_future_date_requires_explicit_confirmation
 
 def test_collect_account_balance_seed_future_date_accepted_when_confirmed(tmp_path, monkeypatch):
     path = tmp_path / "ParsedTransactions.xlsx"
-    _write_unified(path, [
-        {"SourceAccount": "HOUSEHOLD", "SourceBank": "OP", "Date": "2026-03-15", "Amount": -10},
+    _write_raw(path, [
+        {"RawID": "R-1", "SourceAccount": "HOUSEHOLD", "SourceBank": "OP", "BookingDate": "2026-03-15", "Amount": -10},
     ])
     _feed(monkeypatch, ["2026-04-01", "y", "500.00"])
     overrides = {}
@@ -133,7 +135,7 @@ def test_collect_account_balance_seed_future_date_accepted_when_confirmed(tmp_pa
 
 def test_collect_account_balance_seed_blank_date_skips(tmp_path, monkeypatch):
     path = tmp_path / "ParsedTransactions.xlsx"
-    _write_unified(path, [])
+    _write_raw(path, [])
     _feed(monkeypatch, [""])
     overrides = {}
 
@@ -144,8 +146,8 @@ def test_collect_account_balance_seed_blank_date_skips(tmp_path, monkeypatch):
 
 def test_collect_account_balance_seed_non_numeric_balance_skips(tmp_path, monkeypatch):
     path = tmp_path / "ParsedTransactions.xlsx"
-    _write_unified(path, [
-        {"SourceAccount": "HOUSEHOLD", "SourceBank": "OP", "Date": "2026-03-15", "Amount": -10},
+    _write_raw(path, [
+        {"RawID": "R-1", "SourceAccount": "HOUSEHOLD", "SourceBank": "OP", "BookingDate": "2026-03-15", "Amount": -10},
     ])
     _feed(monkeypatch, ["", "not a number"])
     overrides = {}
@@ -156,77 +158,64 @@ def test_collect_account_balance_seed_non_numeric_balance_skips(tmp_path, monkey
     assert overrides == {}
 
 
-def test_load_unified_transactions_fills_balance_from_raw_transactions(tmp_path):
+def test_load_raw_transactions_reads_balance_natively(tmp_path):
     """
-    Real bug found and fixed: a transaction unified before Balance was added
-    to UnifiedTransactions' own schema stays blank there forever (this
-    project doesn't re-unify retroactively) - but RawTransactions always has
-    the real value (Nordea's own "Saldo" field, never re-derived), so a gap
-    in UnifiedTransactions' own Balance column must be filled from there,
-    joined by RawID, not left blank.
+    RawTransactions carries Balance directly (Nordea's own "Saldo" field,
+    at the raw/parser layer) - no fallback merge needed, unlike the old
+    UnifiedTransactions-based approach this replaced.
     """
     path = tmp_path / "ParsedTransactions.xlsx"
-    wb = Workbook()
-    ws = wb.active
-    ws.title = "UnifiedTransactions"
-    ws.append(UNIFIED_COLUMNS)
-    ws.append(["U-1", "RAW-1", "PERSONAL", "NORDEA", "PAYMENT", "2026-03-15", 3, 2026, -10, "", "", "", "", "YES", "PERSONAL", "", "", "", "", ""])
+    _write_raw(path, [
+        {"RawID": "R-1", "SourceAccount": "PERSONAL", "SourceBank": "NORDEA", "BookingDate": "2026-03-15", "Amount": -10, "Balance": 456.78},
+    ])
 
-    raw_ws = wb.create_sheet("RawTransactions")
-    raw_ws.append(["RawID", "Balance"])
-    raw_ws.append(["RAW-1", 456.78])
-    wb.save(path)
-
-    df = load_unified_transactions(path)
+    df = load_raw_transactions(path)
 
     assert float(df.iloc[0]["Balance"]) == 456.78
 
 
-def test_load_unified_transactions_excludes_split_parent_rows(tmp_path):
+def test_load_raw_transactions_uses_booking_date_not_value_date(tmp_path):
     """
-    Real bug found and fixed: a manually-split transaction (the Excel macro
-    described in CLAUDE.md) keeps its original "parent" row (UnifiedID ==
-    "U-"+RawID, Include=NO, superseded per Review/Notes) alongside new
-    "child" rows (UnifiedID == parent+"-S0N") that carry the real
-    per-category amounts - same real RawID, same real money, just
-    reallocated. Counting the parent's Amount together with its children
-    double-counts that one real transaction, which silently inflated every
-    reconstructed monthly balance whose window included it.
+    Deliberately reads BookingDate - the real ledger/posting date, which is
+    what an end-of-day balance snapshot reflects - not ValueDate.
+    """
+    path = tmp_path / "ParsedTransactions.xlsx"
+    _write_raw(path, [
+        {"RawID": "R-1", "SourceAccount": "HOUSEHOLD", "SourceBank": "OP", "BookingDate": "2026-03-15", "ValueDate": "2026-03-18", "Amount": -10},
+    ])
+
+    df = load_raw_transactions(path)
+
+    assert df.iloc[0]["_Date"].date().isoformat() == "2026-03-15"
+
+
+def test_owner_lookup_reads_from_unified_transactions_grouped_by_account(tmp_path):
+    """
+    Owner is a display-only label resolved by OwnershipRules at the
+    categoriser layer, which only ever runs against UnifiedTransactions -
+    RawTransactions has no Owner field. This side lookup is deliberately
+    isolated from the balance/date/amount math above and grouped by
+    SourceAccount, never by Owner, so two different accounts sharing an
+    owner are never merged together.
     """
     path = tmp_path / "ParsedTransactions.xlsx"
     wb = Workbook()
     ws = wb.active
     ws.title = "UnifiedTransactions"
-    ws.append(UNIFIED_COLUMNS)
-    ws.append(["U-RAW-1", "RAW-1", "HOUSEHOLD", "OP", "Bank", "2026-03-15", 3, 2026, -60, "", "", "", "", "NO", "HOUSEHOLD", "", "", "", "", "Split into 2 rows"])
-    ws.append(["U-RAW-1-S01", "RAW-1", "HOUSEHOLD", "OP", "Split", "2026-03-15", 3, 2026, -55, "", "", "", "", "YES", "HOUSEHOLD", "EXPENSES", "Groceries", "", "", ""])
-    ws.append(["U-RAW-1-S02", "RAW-1", "HOUSEHOLD", "OP", "Split", "2026-03-15", 3, 2026, -5, "", "", "", "", "YES", "HOUSEHOLD", "EXPENSES", "Other", "", "", ""])
-    # An ordinary, unsplit transaction must be untouched by the filter.
-    ws.append(["U-RAW-2", "RAW-2", "HOUSEHOLD", "OP", "Bank", "2026-03-16", 3, 2026, -10, "", "", "", "", "YES", "HOUSEHOLD", "", "", "", "", ""])
+    ws.append(["SourceAccount", "Owner"])
+    ws.append(["HOUSEHOLD", "HOUSEHOLD_OWNER"])
+    ws.append(["OTHER", "OTHER_OWNER"])
     wb.save(path)
 
-    df = load_unified_transactions(path)
+    lookup = owner_lookup(path)
 
-    assert sorted(df["UnifiedID"].astype(str)) == ["U-RAW-1-S01", "U-RAW-1-S02", "U-RAW-2"]
-    assert float(df["Amount"].astype(float).sum()) == -70.0
+    assert lookup == {"HOUSEHOLD": "HOUSEHOLD_OWNER", "OTHER": "OTHER_OWNER"}
 
 
-def test_load_unified_transactions_prefers_own_balance_over_raw_fallback(tmp_path):
-    """A row that already has its own real Balance (unified after the fix)
-    must not get overwritten by the raw fallback."""
+def test_owner_lookup_missing_unified_sheet_returns_empty(tmp_path):
     path = tmp_path / "ParsedTransactions.xlsx"
-    columns_with_balance = UNIFIED_COLUMNS + ["Balance"]
-    wb = Workbook()
-    ws = wb.active
-    ws.title = "UnifiedTransactions"
-    ws.append(columns_with_balance)
-    ws.append(["U-1", "RAW-1", "PERSONAL", "NORDEA", "PAYMENT", "2026-03-15", 3, 2026, -10, "", "", "", "", "YES", "PERSONAL", "", "", "", "", "", 999.99])
+    _write_raw(path, [
+        {"RawID": "R-1", "SourceAccount": "HOUSEHOLD", "SourceBank": "OP", "BookingDate": "2026-03-15", "Amount": -10},
+    ])
 
-    raw_ws = wb.create_sheet("RawTransactions")
-    raw_ws.append(["RawID", "Balance"])
-    raw_ws.append(["RAW-1", 456.78])
-    wb.save(path)
-
-    df = load_unified_transactions(path)
-
-    assert float(df.iloc[0]["Balance"]) == 999.99
+    assert owner_lookup(path) == {}

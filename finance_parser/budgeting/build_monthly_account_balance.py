@@ -10,10 +10,10 @@ from finance_parser.budgeting.account_balance_seed import (
     BALANCE_FROM_RAW_EXPORT_BANKS,
     DEFAULT_BUDGETING_WORKBOOK,
     EXCLUDED_SOURCE_ACCOUNTS,
-    load_unified_transactions,
+    load_raw_transactions,
+    owner_lookup,
 )
 from finance_parser.budgeting.parsers.investment_dividends import SOURCE_BANK as INVESTMENT_DIVIDEND_SOURCE_BANK
-from finance_parser.common import normalise_text
 from finance_parser.settings import AppSettings, get_settings
 from finance_parser.utilities.fresh_workbook_writer import (
     records_to_sheet_values,
@@ -43,10 +43,8 @@ def month_end_dates(first_date: pd.Timestamp, last_month_end: pd.Timestamp) -> p
     return pd.date_range(start=first_date, end=last_month_end, freq="ME")
 
 
-def _account_owner(group: pd.DataFrame) -> str:
-    owners = group["Owner"].map(normalise_text)
-    non_blank = owners[owners != ""]
-    return non_blank.iloc[0] if len(non_blank) > 0 else ""
+def _account_owner(account: str, owners: dict[str, str]) -> str:
+    return owners.get(account, "")
 
 
 def _has_continuous_coverage(seed_period: pd.Period, target_period: pd.Period, active_months: set) -> bool:
@@ -100,7 +98,7 @@ def _reliable_reconstructed_months(
     return pd.DatetimeIndex(reliable)
 
 
-def _raw_export_balance_rows(account: str, group: pd.DataFrame, months: pd.DatetimeIndex) -> list[dict]:
+def _raw_export_balance_rows(account: str, group: pd.DataFrame, months: pd.DatetimeIndex, owners: dict[str, str]) -> list[dict]:
     """
     Account whose bank export already carries its own running balance
     (Nordea's real "Saldo" field) - use it directly, merge-backward to each
@@ -116,7 +114,7 @@ def _raw_export_balance_rows(account: str, group: pd.DataFrame, months: pd.Datet
     )
     merged = merged.dropna(subset=["_Balance"])
 
-    owner = _account_owner(group)
+    owner = _account_owner(account, owners)
     rows = []
     for _, r in merged.iterrows():
         month_end = r["MonthEnd"]
@@ -133,7 +131,7 @@ def _raw_export_balance_rows(account: str, group: pd.DataFrame, months: pd.Datet
 
 
 def _reconstructed_balance_rows(
-    account: str, group: pd.DataFrame, months: pd.DatetimeIndex, seeds: list[tuple[str, float]]
+    account: str, group: pd.DataFrame, months: pd.DatetimeIndex, seeds: list[tuple[str, float]], owners: dict[str, str]
 ) -> list[dict]:
     """
     Account with no running balance of its own - reconstructed from the
@@ -153,7 +151,7 @@ def _reconstructed_balance_rows(
 
     seed_pairs = [(pd.Timestamp(d), b) for d, b in seeds]  # oldest-first, per account_balance_seeds()
     rows = []
-    owner = _account_owner(group)
+    owner = _account_owner(account, owners)
 
     for month_end in months:
         at_or_before = [p for p in seed_pairs if p[0] <= month_end]
@@ -186,7 +184,8 @@ def build_monthly_balances(
     as_of: date | None = None,
 ) -> tuple[pd.DataFrame, dict[str, object]]:
     settings = settings or get_settings()
-    df = load_unified_transactions(budgeting_workbook)
+    df = load_raw_transactions(budgeting_workbook)
+    owners = owner_lookup(budgeting_workbook)
 
     stats: dict[str, object] = {
         "accounts_processed": [],
@@ -242,15 +241,13 @@ def build_monthly_balances(
 
         if is_raw_export_account:
             months = month_end_dates(earliest_transaction_date, account_last_month_end)
-            account_rows = _raw_export_balance_rows(account, group, months)
+            account_rows = _raw_export_balance_rows(account, group, months, owners)
             if account_rows:
                 stats["accounts_processed"].append(account)
             else:
                 # A bank in BALANCE_FROM_RAW_EXPORT_BANKS is expected to
                 # populate Balance - flag rather than silently produce zero
-                # rows if it turns out not to for this account (real case
-                # this caught: Balance existed at the raw layer but wasn't
-                # yet carried through to UnifiedTransactions at all).
+                # rows if it turns out not to for this account.
                 stats["accounts_raw_export_no_balance_data"].append(account)
             rows.extend(account_rows)
             continue
@@ -269,7 +266,7 @@ def build_monthly_balances(
         start = min(earliest_transaction_date, earliest_seed_date)
         candidate_months = month_end_dates(start, account_last_month_end)
         months = _reliable_reconstructed_months(group, candidate_months, seeds)
-        account_rows = _reconstructed_balance_rows(account, group, months, seeds)
+        account_rows = _reconstructed_balance_rows(account, group, months, seeds, owners)
         if account_rows:
             stats["accounts_processed"].append(account)
         rows.extend(account_rows)

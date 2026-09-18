@@ -24,55 +24,78 @@ EXCLUDED_SOURCE_ACCOUNTS = {"CASH"}
 BALANCE_FROM_RAW_EXPORT_BANKS = {"NORDEA"}
 
 
-def load_unified_transactions(budgeting_workbook: Path) -> pd.DataFrame:
-    if not budgeting_workbook.exists():
-        return pd.DataFrame(columns=["SourceAccount", "SourceBank", "Date", "Amount"])
+def load_raw_transactions(budgeting_workbook: Path) -> pd.DataFrame:
+    """
+    Reads RawTransactions directly - deliberately NOT UnifiedTransactions.
+    RawTransactions is one row per real imported transaction: no Include
+    flag to accidentally lean on, no manually-split child rows (the Excel
+    macro only ever touches UnifiedTransactions), no synthetic income rows
+    injected by a later pipeline stage, and Balance/BookingDate are already
+    native - nothing to fall back or reconstruct. Real bugs found and fixed
+    by using UnifiedTransactions instead, before this: a split transaction's
+    untouched parent row double-counted alongside its children, and a
+    transaction unified before Balance existed on that schema stayed blank
+    forever. Reading Raw sidesteps both classes of bug structurally, not by
+    patching around them.
 
-    df = pd.read_excel(budgeting_workbook, sheet_name="UnifiedTransactions", dtype=object, engine="openpyxl")
+    Uses BookingDate (not ValueDate) as the real ledger date - the date a
+    transaction actually posted, which is what an end-of-day balance
+    snapshot reflects.
+    """
+    if not budgeting_workbook.exists():
+        return pd.DataFrame(columns=["SourceAccount", "SourceBank", "BookingDate", "Amount", "Balance"])
+
+    df = pd.read_excel(budgeting_workbook, sheet_name="RawTransactions", dtype=object, engine="openpyxl")
     df.columns = [normalise_header(c) for c in df.columns]
 
     df["SourceAccount"] = df["SourceAccount"].map(normalise_text)
     df["SourceBank"] = df["SourceBank"].map(normalise_text)
-    df["_Date"] = pd.to_datetime(df["Date"], errors="coerce")
+    df["_Date"] = pd.to_datetime(df["BookingDate"], errors="coerce")
 
     if "Balance" not in df.columns:
         df["Balance"] = pd.NA
 
-    # Balance is only ever populated on UnifiedTransactions going forward
-    # (common.py's raw_to_unified_rows() carries it through from the raw
-    # layer at unify time) - a transaction unified before that existed stays
-    # blank there forever, since re-unifying isn't something this project
-    # does retroactively. RawTransactions itself always has the real value
-    # though (Nordea's own "Saldo" field, at the raw/parser layer, never
-    # re-derived), so fill any gap from there directly rather than depending
-    # on when a given transaction happened to first get imported.
-    try:
-        raw = pd.read_excel(budgeting_workbook, sheet_name="RawTransactions", dtype=object, engine="openpyxl")
-        raw.columns = [normalise_header(c) for c in raw.columns]
-        if "RawID" in raw.columns and "Balance" in raw.columns:
-            raw_balance = raw.set_index("RawID")["Balance"]
-            fallback = df["RawID"].map(raw_balance)
-            df["Balance"] = df["Balance"].where(df["Balance"].notna(), fallback)
-    except (ValueError, KeyError):
-        pass
-
-    # A manually-split transaction (the Excel macro described in CLAUDE.md)
-    # keeps its original "parent" row (UnifiedID == "U-"+RawID, Include=NO,
-    # Review/Notes marks it superseded) alongside new "child" rows
-    # (UnifiedID == parent+"-S0N") that carry the real per-category amounts -
-    # same real RawID, same real money, just reallocated. Summing the
-    # parent's Amount together with its children double-counts that one real
-    # transaction. Real bug this fixed: found via a real dry-run - a single
-    # split transaction was inflating every reconstructed month's balance
-    # whose window included it, by the parent's own full Amount.
-    if "UnifiedID" in df.columns and "RawID" in df.columns:
-        base_unified_id = "U-" + df["RawID"].astype(str)
-        is_child_row = df["UnifiedID"].astype(str) != base_unified_id
-        raw_ids_with_children = set(df.loc[is_child_row, "RawID"].astype(str))
-        is_split_parent = (~is_child_row) & df["RawID"].astype(str).isin(raw_ids_with_children)
-        df = df[~is_split_parent]
-
     return df
+
+
+def owner_lookup(budgeting_workbook: Path) -> dict[str, str]:
+    """
+    A small, read-only side lookup of SourceAccount -> Owner, sourced from
+    UnifiedTransactions - deliberately kept OUT of the balance/date/amount
+    path above. Owner is resolved by content-matching OwnershipRules at the
+    categoriser layer, which only ever runs against UnifiedTransactions -
+    RawTransactions has no Owner field and no way to derive one on its own.
+    This is a pure display label (one value per account, never summed or
+    used in any date/gap/duplicate logic), so reading it from Unified here
+    doesn't reintroduce the risks (Include mixing, split/synthetic rows)
+    that motivated moving the actual balance math off Unified. Grouped by
+    SourceAccount, never by Owner, so two different accounts that happen to
+    share an owner are never merged together.
+    """
+    if not budgeting_workbook.exists():
+        return {}
+
+    try:
+        df = pd.read_excel(budgeting_workbook, sheet_name="UnifiedTransactions", dtype=object, engine="openpyxl")
+    except (ValueError, KeyError):
+        return {}
+
+    df.columns = [normalise_header(c) for c in df.columns]
+    if "SourceAccount" not in df.columns or "Owner" not in df.columns:
+        return {}
+
+    df["SourceAccount"] = df["SourceAccount"].map(normalise_text)
+    df["Owner"] = df["Owner"].map(normalise_text)
+
+    lookup: dict[str, str] = {}
+    for account, group in df.groupby("SourceAccount"):
+        if not account:
+            continue
+        non_blank = group["Owner"][group["Owner"] != ""]
+        if len(non_blank) > 0:
+            lookup[account] = non_blank.iloc[0]
+
+    return lookup
 
 
 def accounts_needing_seed(budgeting_workbook: Path = DEFAULT_BUDGETING_WORKBOOK) -> list[str]:
@@ -82,7 +105,7 @@ def accounts_needing_seed(budgeting_workbook: Path = DEFAULT_BUDGETING_WORKBOOK)
     actually be useful for. Excludes CASH and any account whose transactions
     are ALL from a BALANCE_FROM_RAW_EXPORT_BANKS bank.
     """
-    df = load_unified_transactions(budgeting_workbook)
+    df = load_raw_transactions(budgeting_workbook)
     if len(df) == 0:
         return []
 
@@ -104,7 +127,7 @@ def latest_imported_date(source_account: str, budgeting_workbook: Path = DEFAULT
     the safe default (and upper bound) for a balance seed's own date, since
     we can't vouch for a later date's transactions being fully captured yet.
     """
-    df = load_unified_transactions(budgeting_workbook)
+    df = load_raw_transactions(budgeting_workbook)
     if len(df) == 0:
         return None
 
