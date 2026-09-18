@@ -216,6 +216,79 @@ budgeting:
     assert "2026-02-28" not in by_month
 
 
+def test_reconstructed_backward_reconstruction_stops_at_first_gap(tmp_path):
+    """
+    Real bug found and fixed via a real dry-run: backward reconstruction
+    across an unimported gap (a calendar month with zero real transactions)
+    silently drifts more wrong the further back it goes - every real
+    transaction missing inside the gap never gets added/subtracted back.
+    Must stop at the first such month rather than assume the whole span
+    back to the earliest transaction is gapless.
+    """
+    path = tmp_path / "ParsedTransactions.xlsx"
+    _write_unified(path, [
+        {"SourceAccount": "HOUSEHOLD", "SourceBank": "OP", "Date": "2025-09-05", "Amount": -20, "Owner": "HOUSEHOLD"},
+        # 2025-10 is a real gap: zero imported transactions that month.
+        {"SourceAccount": "HOUSEHOLD", "SourceBank": "OP", "Date": "2025-11-10", "Amount": -40, "Owner": "HOUSEHOLD"},
+        {"SourceAccount": "HOUSEHOLD", "SourceBank": "OP", "Date": "2025-12-20", "Amount": 60, "Owner": "HOUSEHOLD"},
+        {"SourceAccount": "HOUSEHOLD", "SourceBank": "OP", "Date": "2026-01-15", "Amount": -10, "Owner": "HOUSEHOLD"},
+    ])
+    settings = _settings_with_seeds(
+        """
+budgeting:
+  account_balance_seeds:
+    HOUSEHOLD:
+      "2026-01-15": 1000.0
+""",
+        tmp_path,
+    )
+
+    result, stats = build_monthly_balances(path, settings, as_of=date(2026, 2, 1))
+
+    rows = result[result["SourceAccount"] == "HOUSEHOLD"]
+    by_month = set(rows["MonthEnd"])
+    # Nov and Dec connect to the seed with no gap in between - reconstructed.
+    assert "2025-12-31" in by_month
+    assert "2025-11-30" in by_month
+    # October is the gap itself; September is on the far side of it - unsafe either way.
+    assert "2025-10-31" not in by_month
+    assert "2025-09-30" not in by_month
+
+
+def test_reconstructed_forward_reconstruction_also_stops_at_first_gap(tmp_path):
+    """
+    The same gap guard applies going forward from the seed, not just
+    backward - a month past an unimported gap is just as untrustworthy
+    either direction.
+    """
+    path = tmp_path / "ParsedTransactions.xlsx"
+    _write_unified(path, [
+        {"SourceAccount": "HOUSEHOLD", "SourceBank": "OP", "Date": "2026-01-15", "Amount": -10, "Owner": "HOUSEHOLD"},
+        {"SourceAccount": "HOUSEHOLD", "SourceBank": "OP", "Date": "2026-02-05", "Amount": -20, "Owner": "HOUSEHOLD"},
+        # 2026-03 is a real gap: zero imported transactions that month.
+        {"SourceAccount": "HOUSEHOLD", "SourceBank": "OP", "Date": "2026-04-10", "Amount": 40, "Owner": "HOUSEHOLD"},
+        {"SourceAccount": "HOUSEHOLD", "SourceBank": "OP", "Date": "2026-05-05", "Amount": 5, "Owner": "HOUSEHOLD"},
+    ])
+    settings = _settings_with_seeds(
+        """
+budgeting:
+  account_balance_seeds:
+    HOUSEHOLD:
+      "2026-01-15": 1000.0
+""",
+        tmp_path,
+    )
+
+    result, stats = build_monthly_balances(path, settings, as_of=date(2026, 6, 1))
+
+    rows = result[result["SourceAccount"] == "HOUSEHOLD"]
+    by_month = set(rows["MonthEnd"])
+    assert "2026-01-31" in by_month
+    assert "2026-02-28" in by_month
+    assert "2026-03-31" not in by_month  # the gap itself
+    assert "2026-04-30" not in by_month  # beyond the gap, unsafe
+
+
 def test_account_with_no_seed_is_flagged_not_silently_skipped(tmp_path):
     path = tmp_path / "ParsedTransactions.xlsx"
     _write_unified(path, [

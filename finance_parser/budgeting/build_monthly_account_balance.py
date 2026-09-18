@@ -48,6 +48,57 @@ def _account_owner(group: pd.DataFrame) -> str:
     return non_blank.iloc[0] if len(non_blank) > 0 else ""
 
 
+def _has_continuous_coverage(seed_period: pd.Period, target_period: pd.Period, active_months: set) -> bool:
+    """
+    True if every calendar month strictly between seed_period and
+    target_period (in whichever direction) has at least one real
+    transaction - i.e. reconstruction math can walk that whole chain without
+    silently crossing an unimported gap.
+    """
+    if seed_period == target_period:
+        return True
+    step = 1 if target_period > seed_period else -1
+    cursor = seed_period + step
+    while True:
+        if cursor not in active_months:
+            return False
+        if cursor == target_period:
+            return True
+        cursor += step
+
+
+def _reliable_reconstructed_months(
+    group: pd.DataFrame, months: pd.DatetimeIndex, seeds: list[tuple[str, float]]
+) -> pd.DatetimeIndex:
+    """
+    Filters candidate month-ends down to ones connected to their applicable
+    seed by an unbroken run of calendar months with at least one real
+    transaction. Reconstruction is a running sum, so any real, unimported
+    gap in that chain silently skews every month past it - the further from
+    the seed, the worse the drift. Real case that surfaced this: an account
+    with a real multi-year stretch of consecutive calendar months with zero
+    imported transactions (an import gap, not genuine long-term dormancy)
+    produced wildly wrong, deeply negative historical balances before this
+    guard existed. A calendar month with genuinely zero real activity looks
+    identical to an unimported gap from the data alone, so this is
+    deliberately conservative - it may withhold a real, correct month rather
+    than risk a wrong one.
+    """
+    seed_periods = sorted({pd.Timestamp(d).to_period("M") for d, _ in seeds})
+    active_months = set(group["_Date"].dt.to_period("M"))
+
+    reliable = []
+    for month_end in months:
+        target_period = month_end.to_period("M")
+        applicable = [p for p in seed_periods if p <= target_period]
+        seed_period = applicable[-1] if applicable else seed_periods[0]
+
+        if _has_continuous_coverage(seed_period, target_period, active_months):
+            reliable.append(month_end)
+
+    return pd.DatetimeIndex(reliable)
+
+
 def _raw_export_balance_rows(account: str, group: pd.DataFrame, months: pd.DatetimeIndex) -> list[dict]:
     """
     Account whose bank export already carries its own running balance
@@ -205,7 +256,8 @@ def build_monthly_balances(
         # (see _reconstructed_balance_rows).
         earliest_seed_date = pd.Timestamp(seeds[0][0])
         start = min(earliest_transaction_date, earliest_seed_date)
-        months = month_end_dates(start, account_last_month_end)
+        candidate_months = month_end_dates(start, account_last_month_end)
+        months = _reliable_reconstructed_months(group, candidate_months, seeds)
         account_rows = _reconstructed_balance_rows(account, group, months, seeds)
         if account_rows:
             stats["accounts_processed"].append(account)

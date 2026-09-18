@@ -66,8 +66,13 @@ says the month is over. In practice this means the current month (and sometimes 
 one before it, if your last import happened mid-month) won't show up yet; it appears
 automatically on a later run once newer data confirms it. Reconstructed accounts also
 build backward automatically: if you have real transaction history from before your
-seed date, earlier months are computed too (same math, run in reverse), all the way
-back to however far your imports reach.
+seed date, earlier months are computed too (same math, run in reverse) - but only back
+through an unbroken run of calendar months that each have at least one real imported
+transaction. Reconstruction stops at the first calendar month with zero transactions in
+either direction, since that's indistinguishable from an unimported gap - and any real
+transaction missing inside a gap would silently throw off every month past it. A
+genuinely quiet month on an active account can be caught in this too; that's the
+deliberately safe failure mode.
 
 ## Budgeting dry-run workflow
 
