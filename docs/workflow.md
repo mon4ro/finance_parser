@@ -60,6 +60,15 @@ it. An account with no seed configured yet just produces no monthly rows for its
 (reported clearly in the step's output, not silently guessed or dropped). Pass
 `--skip-account-balance` to disable step 6.
 
+A month-end row is only produced once there's a real transaction dated *after* it,
+proving the export actually continued past that point - not just because the calendar
+says the month is over. In practice this means the current month (and sometimes the
+one before it, if your last import happened mid-month) won't show up yet; it appears
+automatically on a later run once newer data confirms it. Reconstructed accounts also
+build backward automatically: if you have real transaction history from before your
+seed date, earlier months are computed too (same math, run in reverse), all the way
+back to however far your imports reach.
+
 ## Budgeting dry-run workflow
 
 Use dry-run before a real import:

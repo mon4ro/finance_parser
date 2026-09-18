@@ -57,17 +57,43 @@ def test_nordea_uses_raw_balance_directly(tmp_path):
         {"SourceAccount": "PERSONAL", "SourceBank": "NORDEA", "Date": "2026-01-10", "Amount": -50, "Balance": 950, "Owner": "PERSONAL"},
         {"SourceAccount": "PERSONAL", "SourceBank": "NORDEA", "Date": "2026-01-25", "Amount": -20, "Balance": 930, "Owner": "PERSONAL"},
         {"SourceAccount": "PERSONAL", "SourceBank": "NORDEA", "Date": "2026-02-05", "Amount": 100, "Balance": 1030, "Owner": "PERSONAL"},
+        {"SourceAccount": "PERSONAL", "SourceBank": "NORDEA", "Date": "2026-03-01", "Amount": 1, "Balance": 1031, "Owner": "PERSONAL"},
+    ])
+    settings = _settings_with_seeds("budgeting:\n  default_include: 'YES'\n", tmp_path)
+
+    result, stats = build_monthly_balances(path, settings, as_of=date(2026, 3, 5))
+
+    rows = result[result["SourceAccount"] == "PERSONAL"]
+    # February's own end-of-month row is only trustworthy once there's a
+    # real transaction dated AFTER Feb 28 (here, the Mar 1 row) proving the
+    # import continued past it - not just because Feb 5 happens to be the
+    # latest transaction and the calendar says February is over.
+    assert list(rows["MonthEnd"]) == ["2026-01-31", "2026-02-28"]
+    assert list(rows["Balance"]) == [930.0, 1030.0]
+    assert list(rows["BalanceSource"]) == ["RAW_EXPORT", "RAW_EXPORT"]
+    assert list(rows["Owner"]) == ["PERSONAL", "PERSONAL"]
+    assert "PERSONAL" in stats["accounts_processed"]
+
+
+def test_nordea_month_with_no_later_transaction_evidence_is_withheld(tmp_path):
+    """
+    Real bug found and fixed: the latest imported transaction landing
+    mid-month (not exactly on that month's last calendar day) must NOT get
+    a full end-of-month balance yet - there's no evidence the import
+    covered the rest of that month.
+    """
+    path = tmp_path / "ParsedTransactions.xlsx"
+    _write_unified(path, [
+        {"SourceAccount": "PERSONAL", "SourceBank": "NORDEA", "Date": "2026-01-10", "Amount": -50, "Balance": 950, "Owner": "PERSONAL"},
+        {"SourceAccount": "PERSONAL", "SourceBank": "NORDEA", "Date": "2026-02-05", "Amount": 100, "Balance": 1030, "Owner": "PERSONAL"},
     ])
     settings = _settings_with_seeds("budgeting:\n  default_include: 'YES'\n", tmp_path)
 
     result, stats = build_monthly_balances(path, settings, as_of=date(2026, 3, 1))
 
     rows = result[result["SourceAccount"] == "PERSONAL"]
-    assert list(rows["MonthEnd"]) == ["2026-01-31", "2026-02-28"]
-    assert list(rows["Balance"]) == [930.0, 1030.0]
-    assert list(rows["BalanceSource"]) == ["RAW_EXPORT", "RAW_EXPORT"]
-    assert list(rows["Owner"]) == ["PERSONAL", "PERSONAL"]
-    assert "PERSONAL" in stats["accounts_processed"]
+    assert list(rows["MonthEnd"]) == ["2026-01-31"]
+    assert list(rows["Balance"]) == [950.0]
 
 
 def test_nordea_account_with_no_balance_data_is_flagged_not_silently_dropped(tmp_path):
@@ -97,6 +123,42 @@ def test_reconstructed_account_sums_from_seed_forward(tmp_path):
     _write_unified(path, [
         {"SourceAccount": "HOUSEHOLD", "SourceBank": "OP", "Date": "2026-01-15", "Amount": -30, "Owner": "HOUSEHOLD"},
         {"SourceAccount": "HOUSEHOLD", "SourceBank": "OP", "Date": "2026-02-10", "Amount": 200, "Owner": "HOUSEHOLD"},
+        # Proves February is "closed" (import continued past Feb 28) - see
+        # test_reconstructed_month_with_no_later_transaction_evidence_is_withheld
+        # for the case where this is missing.
+        {"SourceAccount": "HOUSEHOLD", "SourceBank": "OP", "Date": "2026-03-01", "Amount": 1, "Owner": "HOUSEHOLD"},
+    ])
+    settings = _settings_with_seeds(
+        """
+budgeting:
+  account_balance_seeds:
+    HOUSEHOLD:
+      "2026-01-15": 1000.0
+""",
+        tmp_path,
+    )
+
+    result, stats = build_monthly_balances(path, settings, as_of=date(2026, 3, 5))
+
+    rows = result[result["SourceAccount"] == "HOUSEHOLD"]
+    # Seed date 01-15 is end-of-day, so its own -30 is already baked in.
+    assert list(rows["MonthEnd"]) == ["2026-01-31", "2026-02-28"]
+    assert list(rows["Balance"]) == [1000.0, 1200.0]
+    assert list(rows["BalanceSource"]) == ["RECONSTRUCTED", "RECONSTRUCTED"]
+    assert "HOUSEHOLD" in stats["accounts_processed"]
+
+
+def test_reconstructed_month_with_no_later_transaction_evidence_is_withheld(tmp_path):
+    """
+    Real bug found and fixed: the seed forward-projection must not produce a
+    row for a month whose end we have no evidence of (no later transaction
+    proving the import continued past it) - same rule as the raw-export
+    path, see test_nordea_month_with_no_later_transaction_evidence_is_withheld.
+    """
+    path = tmp_path / "ParsedTransactions.xlsx"
+    _write_unified(path, [
+        {"SourceAccount": "HOUSEHOLD", "SourceBank": "OP", "Date": "2026-01-15", "Amount": -30, "Owner": "HOUSEHOLD"},
+        {"SourceAccount": "HOUSEHOLD", "SourceBank": "OP", "Date": "2026-02-10", "Amount": 200, "Owner": "HOUSEHOLD"},
     ])
     settings = _settings_with_seeds(
         """
@@ -111,11 +173,47 @@ budgeting:
     result, stats = build_monthly_balances(path, settings, as_of=date(2026, 3, 1))
 
     rows = result[result["SourceAccount"] == "HOUSEHOLD"]
-    # Seed date 01-15 is end-of-day, so its own -30 is already baked in.
-    assert list(rows["MonthEnd"]) == ["2026-01-31", "2026-02-28"]
-    assert list(rows["Balance"]) == [1000.0, 1200.0]
-    assert list(rows["BalanceSource"]) == ["RECONSTRUCTED", "RECONSTRUCTED"]
-    assert "HOUSEHOLD" in stats["accounts_processed"]
+    assert list(rows["MonthEnd"]) == ["2026-01-31"]
+    assert list(rows["Balance"]) == [1000.0]
+
+
+def test_reconstructed_account_projects_backward_before_the_seed(tmp_path):
+    """
+    A seed doesn't have to be the account's earliest known point - real
+    transaction history before it (e.g. the account was imported well
+    before the seed was ever entered) makes those earlier months computable
+    too, via the same deterministic subtraction run in reverse.
+    """
+    path = tmp_path / "ParsedTransactions.xlsx"
+    _write_unified(path, [
+        {"SourceAccount": "HOUSEHOLD", "SourceBank": "OP", "Date": "2025-11-10", "Amount": -40, "Owner": "HOUSEHOLD"},
+        {"SourceAccount": "HOUSEHOLD", "SourceBank": "OP", "Date": "2025-12-20", "Amount": 60, "Owner": "HOUSEHOLD"},
+        {"SourceAccount": "HOUSEHOLD", "SourceBank": "OP", "Date": "2026-01-15", "Amount": -10, "Owner": "HOUSEHOLD"},
+        {"SourceAccount": "HOUSEHOLD", "SourceBank": "OP", "Date": "2026-02-10", "Amount": 5, "Owner": "HOUSEHOLD"},
+    ])
+    settings = _settings_with_seeds(
+        """
+budgeting:
+  account_balance_seeds:
+    HOUSEHOLD:
+      "2026-01-15": 1000.0
+""",
+        tmp_path,
+    )
+
+    result, stats = build_monthly_balances(path, settings, as_of=date(2026, 3, 1))
+
+    rows = result[result["SourceAccount"] == "HOUSEHOLD"]
+    by_month = dict(zip(rows["MonthEnd"], rows["Balance"]))
+    # Dec: seed (1000) minus everything after Dec 31 through the seed date
+    # (-10 on Jan 15) = 1010.
+    assert by_month["2025-12-31"] == 1010.0
+    # Nov: seed minus everything after Nov 30 through the seed date
+    # (60 on Dec 20, -10 on Jan 15) = 1000 - 50 = 950.
+    assert by_month["2025-11-30"] == 950.0
+    assert by_month["2026-01-31"] == 1000.0
+    # Feb's own last transaction (02-10) doesn't prove the month is closed.
+    assert "2026-02-28" not in by_month
 
 
 def test_account_with_no_seed_is_flagged_not_silently_skipped(tmp_path):
@@ -179,5 +277,6 @@ budgeting:
     assert by_month["2026-01-31"] == 1000.0
     # Feb: seed2 (5000, effective 02-15) - the 02-01 transaction predates it, ignored
     assert by_month["2026-02-28"] == 5000.0
-    # Mar: seed2 + the 03-05 transaction (+5)
-    assert by_month["2026-03-31"] == 5005.0
+    # Mar 31 is withheld: the latest real transaction (03-05) doesn't prove
+    # the import covered the rest of March.
+    assert "2026-03-31" not in by_month

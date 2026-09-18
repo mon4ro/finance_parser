@@ -84,28 +84,35 @@ def _reconstructed_balance_rows(
     account: str, group: pd.DataFrame, months: pd.DatetimeIndex, seeds: list[tuple[str, float]]
 ) -> list[dict]:
     """
-    Account with no running balance of its own - reconstructed by cumsum of
-    real Amount from the most recent seed at-or-before each month-end. A
-    seed's date is always end-of-day (see account_balance_seed.py's
-    collector), so only transactions STRICTLY after it are summed - same-day
-    transactions are already reflected in the seed itself, never double
-    counted once they're imported.
+    Account with no running balance of its own - reconstructed from the
+    nearest seed. For a month at-or-after a seed, project FORWARD (cumsum of
+    real Amount after it). For a month before every seed - real transaction
+    history predating the earliest seed, so its own months are also
+    computable - project BACKWARD from the earliest seed instead (subtract
+    real Amount between the month-end and the seed). Both directions are
+    equally exact, deterministic sums; backward isn't a guess. A seed's date
+    is always end-of-day (see account_balance_seed.py's collector): forward
+    projection sums transactions STRICTLY after it, backward projection
+    subtracts transactions up to AND INCLUDING it - both exclude the seed's
+    own date from being double counted.
     """
     if not seeds:
         return []
 
-    seed_dates = [pd.Timestamp(d) for d, _ in seeds]
+    seed_pairs = [(pd.Timestamp(d), b) for d, b in seeds]  # oldest-first, per account_balance_seeds()
     rows = []
     owner = _account_owner(group)
 
     for month_end in months:
-        applicable = [(d, b) for d, b in zip(seed_dates, [bal for _, bal in seeds]) if d <= month_end]
-        if not applicable:
-            continue
-        seed_date, seed_balance = applicable[-1]
-
-        later_transactions = group[(group["_Date"] > seed_date) & (group["_Date"] <= month_end)]
-        balance = seed_balance + later_transactions["_Amount"].sum()
+        at_or_before = [p for p in seed_pairs if p[0] <= month_end]
+        if at_or_before:
+            seed_date, seed_balance = at_or_before[-1]
+            window = group[(group["_Date"] > seed_date) & (group["_Date"] <= month_end)]
+            balance = seed_balance + window["_Amount"].sum()
+        else:
+            seed_date, seed_balance = seed_pairs[0]
+            window = group[(group["_Date"] > month_end) & (group["_Date"] <= seed_date)]
+            balance = seed_balance - window["_Amount"].sum()
 
         rows.append({
             "MonthEnd": month_end.strftime("%Y-%m-%d"),
@@ -155,11 +162,24 @@ def build_monthly_balances(
         if len(group) == 0:
             continue
 
+        earliest_transaction_date = group["_Date"].iloc[0]
+        latest_transaction_date = group["_Date"].iloc[-1]
+        # A month-end is only trustworthy once there's evidence the import
+        # continued past it (a real transaction dated after it) - not just
+        # because the calendar says the month is over. Real bug this fixes:
+        # an account whose latest import landed mid-month (e.g. the 18th)
+        # was still getting a full end-of-month balance for that same month,
+        # silently assuming zero further transactions that just hadn't been
+        # imported yet. Capping here (rather than only via last_month_end)
+        # means date_range's own upper bound naturally excludes any
+        # not-yet-confirmed trailing month.
+        account_last_month_end = min(last_month_end, latest_transaction_date)
+
         banks = set(group["SourceBank"].unique())
         is_raw_export_account = bool(banks) and banks.issubset(BALANCE_FROM_RAW_EXPORT_BANKS)
 
         if is_raw_export_account:
-            months = month_end_dates(group["_Date"].iloc[0], last_month_end)
+            months = month_end_dates(earliest_transaction_date, account_last_month_end)
             account_rows = _raw_export_balance_rows(account, group, months)
             if account_rows:
                 stats["accounts_processed"].append(account)
@@ -178,8 +198,14 @@ def build_monthly_balances(
             stats["accounts_no_seed_configured"].append(account)
             continue
 
-        earliest_seed = pd.Timestamp(seeds[0][0])
-        months = month_end_dates(earliest_seed, last_month_end)
+        # Start as far back as either the earliest seed or real transaction
+        # history reaches, whichever is earlier - a seed alone anchors a
+        # known balance from its own date, and real transactions predating
+        # it (if imported) extend that further back via backward projection
+        # (see _reconstructed_balance_rows).
+        earliest_seed_date = pd.Timestamp(seeds[0][0])
+        start = min(earliest_transaction_date, earliest_seed_date)
+        months = month_end_dates(start, account_last_month_end)
         account_rows = _reconstructed_balance_rows(account, group, months, seeds)
         if account_rows:
             stats["accounts_processed"].append(account)
