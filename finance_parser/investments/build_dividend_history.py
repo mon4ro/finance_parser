@@ -25,7 +25,7 @@ DIVIDEND_HISTORY_SHEET = "DividendHistory"
 DIVIDEND_HISTORY_COLUMNS = [
     "TradeDate", "Year", "Month", "Broker", "Portfolio", "PortfolioOwner",
     "PortfolioType", "NormalizedInstrument", "GrossDividendEUR",
-    "TaxWithheldEUR", "NetDividendEUR",
+    "TaxWithheldEUR", "NetDividendEUR", "TaxDataAvailable",
     "LocalCurrency", "GrossDividendLocal", "TaxWithheldLocal", "ExchangeRate",
 ]
 
@@ -64,8 +64,23 @@ def load_dividend_events(investments_workbook: Path) -> pd.DataFrame:
         return pd.DataFrame(columns=[
             "Broker", "Portfolio", "PortfolioOwner", "PortfolioType",
             "NormalizedInstrument", "TradeDate", "GrossDividendEUR",
-            "TaxWithheldEUR", "NetDividendEUR",
+            "TaxWithheldEUR", "NetDividendEUR", "TaxDataAvailable",
         ])
+
+    # Real gap found and reported (not silently fixed - see below): a
+    # broker whose export never includes a withholding-tax transaction row
+    # at all (confirmed against real data: EVLI, an employee share-purchase
+    # plan account) makes TaxWithheldEUR sum to exactly 0 for every
+    # one of its dividends, which looks identical to "genuinely tax-exempt"
+    # even when real tax WAS withheld (just not visible in this data
+    # source - possibly settled via payroll instead). Flagging per broker
+    # (does this broker's export format ever carry a withholding row for
+    # ANY dividend) rather than guessing a withholding amount we have no
+    # real source for - this project never fabricates a number it can't
+    # derive from real data.
+    brokers_with_tax_data = set(
+        relevant.loc[relevant["TransactionType"].isin(WITHHOLDING_TAX_TYPES), "Broker"].unique()
+    )
 
     relevant["GrossDividendEUR"] = relevant["CashAmount"].where(relevant["TransactionType"].isin(GROSS_DIVIDEND_TYPES), 0.0)
     # Withholding tax is stored as a negative CashAmount (money leaving) -
@@ -80,6 +95,7 @@ def load_dividend_events(investments_workbook: Path) -> pd.DataFrame:
         TaxWithheldEUR=("TaxWithheldEUR", "sum"),
     )
     grouped["NetDividendEUR"] = grouped["GrossDividendEUR"] - grouped["TaxWithheldEUR"]
+    grouped["TaxDataAvailable"] = grouped["Broker"].isin(brokers_with_tax_data)
 
     return grouped.sort_values(group_cols).reset_index(drop=True)
 
@@ -105,6 +121,7 @@ def build_dividend_history(
             "GrossDividendEUR": events["GrossDividendEUR"].round(2),
             "TaxWithheldEUR": events["TaxWithheldEUR"].round(2),
             "NetDividendEUR": events["NetDividendEUR"].round(2),
+            "TaxDataAvailable": events["TaxDataAvailable"],
         })
 
     # Best-effort enrichment, not a hard dependency: only Telia has ever
@@ -119,12 +136,17 @@ def build_dividend_history(
         for col in ["LocalCurrency", "GrossDividendLocal", "TaxWithheldLocal", "ExchangeRate"]:
             result[col] = ""
 
+    brokers_without_tax_data = sorted(
+        set(result.loc[~result["TaxDataAvailable"].astype(bool), "Broker"])
+    ) if len(result) else []
+
     stats = {
         "events": len(result),
         "total_gross_eur": round(float(result["GrossDividendEUR"].sum()), 2) if len(result) else 0.0,
         "total_tax_eur": round(float(result["TaxWithheldEUR"].sum()), 2) if len(result) else 0.0,
         "total_net_eur": round(float(result["NetDividendEUR"].sum()), 2) if len(result) else 0.0,
         "local_currency_events_matched": local_currency_matched,
+        "brokers_without_tax_data": brokers_without_tax_data,
     }
 
     return result[DIVIDEND_HISTORY_COLUMNS], stats
@@ -184,6 +206,15 @@ def main() -> None:
     print(f"Total tax withheld:    {stats['total_tax_eur']}")
     print(f"Total net dividends:   {stats['total_net_eur']}")
     print(f"Local-currency detail matched: {stats['local_currency_events_matched']}")
+
+    if stats["brokers_without_tax_data"]:
+        print()
+        print(
+            f"WARNING: {', '.join(stats['brokers_without_tax_data'])} export(s) never include a "
+            "withholding-tax transaction row for any dividend - GrossDividendEUR == NetDividendEUR "
+            "for these is a data-availability gap, NOT a claim that no tax was withheld. Real tax may"
+        )
+        print("  have been withheld outside this data source (e.g. via payroll) and isn't recoverable from here.")
 
     if args.dry_run:
         print()

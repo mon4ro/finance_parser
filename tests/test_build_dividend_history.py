@@ -40,7 +40,14 @@ def test_dividend_and_tax_on_the_same_date_are_grouped_into_one_event(tmp_path):
 
 
 def test_dividend_with_no_matching_tax_row_still_reports_correctly(tmp_path):
-    """Real case: EVLI dividends have no withholding row at all."""
+    """
+    Real case: EVLI dividends (an employee share-purchase plan account)
+    have no withholding row at all in the real data - GrossDividendEUR ends
+    up equal to NetDividendEUR, which looks identical to "genuinely
+    tax-exempt" even when real tax was withheld outside this data source
+    (e.g. via payroll). TaxDataAvailable=False makes that gap visible
+    instead of silently implying zero tax was withheld.
+    """
     path = tmp_path / "ParsedInvestments.xlsx"
     _write_transactions(path, [
         {"Broker": "EVLI", "Portfolio": "EVLI", "PortfolioOwner": "PERSON_A", "PortfolioType": "", "NormalizedInstrument": "NOKIA", "TransactionType": "DIVIDEND", "TradeDate": "2021-02-01", "CashAmount": 15.0},
@@ -53,6 +60,29 @@ def test_dividend_with_no_matching_tax_row_still_reports_correctly(tmp_path):
     assert row["GrossDividendEUR"] == 15.0
     assert row["TaxWithheldEUR"] == 0.0
     assert row["NetDividendEUR"] == 15.0
+    assert row["TaxDataAvailable"] == False
+    assert stats["brokers_without_tax_data"] == ["EVLI"]
+
+
+def test_broker_with_tax_data_elsewhere_is_flagged_available(tmp_path):
+    """
+    TaxDataAvailable is a broker-level signal (does this broker's export
+    format ever carry a withholding row at all), not a per-event one - a
+    genuinely tax-exempt individual dividend from a broker that DOES report
+    withholding elsewhere must not be mistaken for a data-availability gap.
+    """
+    path = tmp_path / "ParsedInvestments.xlsx"
+    _write_transactions(path, [
+        {"Broker": "OP", "Portfolio": "OP", "PortfolioOwner": "PERSON_A", "PortfolioType": "AOT", "NormalizedInstrument": "SAMPO A", "TransactionType": "DIVIDEND", "TradeDate": "2021-01-15", "CashAmount": 20.0},
+        {"Broker": "OP", "Portfolio": "OP", "PortfolioOwner": "PERSON_A", "PortfolioType": "AOT", "NormalizedInstrument": "SAMPO A", "TransactionType": "TAX", "TradeDate": "2021-01-15", "CashAmount": -3.0},
+        # Genuinely tax-exempt dividend, same broker, no tax row of its own.
+        {"Broker": "OP", "Portfolio": "OP", "PortfolioOwner": "PERSON_A", "PortfolioType": "AOT", "NormalizedInstrument": "KESKO B", "TransactionType": "DIVIDEND", "TradeDate": "2021-02-15", "CashAmount": 10.0},
+    ])
+
+    result, stats = build_dividend_history(path)
+
+    assert set(result["TaxDataAvailable"]) == {True}
+    assert stats["brokers_without_tax_data"] == []
 
 
 def test_ennakkopidatys_is_treated_the_same_as_tax(tmp_path):
