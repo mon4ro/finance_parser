@@ -128,6 +128,84 @@ def test_multiple_candidates_are_reported_ambiguous_not_guessed():
     assert list(updated["Category"]) == ["", ""]
 
 
+def test_local_currency_fallback_matches_when_estimate_does_not():
+    """
+    Real gap found and fixed: this project's own EUR estimate
+    (NetDividendEUR) can be a cent or two off from what the broker's real
+    local-currency conversion actually booked into the bank transaction.
+    When the estimate doesn't match anything, retry using OP's own real net
+    amount (GrossDividendLocal - TaxWithheldLocal) / ExchangeRate, parsed
+    from OP's own dividend-notice text - confirmed against real data to
+    resolve every real case seen.
+    """
+    unified = pd.DataFrame([
+        # Real bank amount is 42.50, not the 50.00 estimate.
+        _unified_row(UnifiedID="U-1", Date="2021-06-15", Amount=42.50, Owner=""),
+    ])
+    events = pd.DataFrame([_dividend_event(
+        NetDividendEUR=50.00,
+        GrossDividendLocal=400.0, TaxWithheldLocal=60.0, ExchangeRate=8.0,  # (400-60)/8 = 42.50
+    )])
+
+    updated, stats = match_dividend_income(unified, events)
+
+    row = updated.iloc[0]
+    assert row["Category"] == "Passive income"
+    assert stats["matched"] == 1
+    assert stats["matched_via_local_currency_fallback"] == 1
+
+
+def test_local_currency_fallback_not_used_when_estimate_already_matches():
+    """The fallback must only ever be tried after the estimate genuinely
+    finds nothing - an already-working exact-estimate match must not be
+    disturbed or double-counted."""
+    unified = pd.DataFrame([
+        _unified_row(UnifiedID="U-1", Date="2021-06-15", Amount=100.0),
+    ])
+    events = pd.DataFrame([_dividend_event(
+        NetDividendEUR=100.0,
+        GrossDividendLocal=400.0, TaxWithheldLocal=60.0, ExchangeRate=8.0,  # would compute to 42.50, unused
+    )])
+
+    updated, stats = match_dividend_income(unified, events)
+
+    assert stats["matched"] == 1
+    assert stats["matched_via_local_currency_fallback"] == 0
+
+
+def test_missing_local_currency_detail_stays_unmatched_not_guessed():
+    """An event with no local-currency detail available (the vast
+    majority) must fall straight through to "unmatched" when the estimate
+    doesn't match - no fallback to try, no crash."""
+    unified = pd.DataFrame([
+        _unified_row(UnifiedID="U-1", Date="2021-06-15", Amount=42.50),
+    ])
+    events = pd.DataFrame([_dividend_event(NetDividendEUR=50.00)])
+
+    updated, stats = match_dividend_income(unified, events)
+
+    assert stats["matched"] == 0
+    assert stats["matched_via_local_currency_fallback"] == 0
+    assert len(stats["unmatched"]) == 1
+
+
+def test_local_currency_fallback_also_respects_date_tolerance():
+    unified = pd.DataFrame([
+        _unified_row(UnifiedID="U-1", Date="2021-06-17", Amount=42.50),
+    ])
+    events = pd.DataFrame([_dividend_event(
+        TradeDate=pd.Timestamp("2021-06-15"),
+        NetDividendEUR=50.00,
+        GrossDividendLocal=400.0, TaxWithheldLocal=60.0, ExchangeRate=8.0,
+    )])
+
+    updated, stats = match_dividend_income(unified, events)
+
+    assert stats["matched"] == 1
+    assert stats["matched_via_local_currency_fallback"] == 1
+    assert stats["matched_via_date_tolerance"] == 1
+
+
 def test_load_dividend_events_filters_to_matchable_brokers_only(tmp_path):
     """Nordnet/EVLI dividends never settle same-day into a bank account -
     they're handled separately (investment_dividends.py's synthetic rows),

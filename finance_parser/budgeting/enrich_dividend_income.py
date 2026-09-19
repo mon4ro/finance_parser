@@ -66,7 +66,37 @@ def load_dividend_events(dividend_history_path: Path) -> pd.DataFrame:
     df = df.dropna(subset=["TradeDate", "NetDividendEUR"])
     df = df[df["NetDividendEUR"] > 0]
 
+    # Real gap found and fixed: NetDividendEUR is this project's own EUR
+    # estimate (built from a daily reference FX rate), which can differ by
+    # a cent or two from what OP's own real SEK->EUR conversion actually
+    # booked into the bank transaction. For an instrument where OP's own
+    # dividend-notice text was parsed (enrich_dividend_local_currency.py,
+    # investment side - currently only Telia), these columns carry OP's own
+    # real local-currency detail and let match_dividend_income() compute
+    # OP's own real net EUR amount as a fallback when the estimate doesn't
+    # match - confirmed against real data to resolve every real case seen.
+    for col in ("LocalCurrency", "GrossDividendLocal", "TaxWithheldLocal", "ExchangeRate"):
+        if col not in df.columns:
+            df[col] = pd.NA
+
     return df
+
+
+def _real_net_eur_from_local_currency(event: pd.Series) -> float | None:
+    """
+    OP's own real net EUR amount, computed from the exact local-currency
+    detail parsed from OP's own dividend-notice text - not this project's
+    own independent EUR estimate. Returns None if the detail isn't
+    available for this event (the vast majority - only Telia currently).
+    """
+    gross = pd.to_numeric(event.get("GrossDividendLocal"), errors="coerce")
+    tax = pd.to_numeric(event.get("TaxWithheldLocal"), errors="coerce")
+    rate = pd.to_numeric(event.get("ExchangeRate"), errors="coerce")
+
+    if pd.isna(gross) or pd.isna(tax) or pd.isna(rate) or rate == 0:
+        return None
+
+    return round((float(gross) - float(tax)) / float(rate), 2)
 
 
 def find_uncovered_broker_dividends(dividend_history_path: Path) -> list[tuple[str, str, str, float]]:
@@ -98,6 +128,32 @@ def _is_blank(value: object) -> bool:
     return str(value if value is not None else "").strip() == ""
 
 
+def _find_amount_date_match(out: pd.DataFrame, target_amount: float, target_date) -> tuple[str, pd.DataFrame]:
+    """
+    Look for exactly one UnifiedTransactions row matching target_amount at
+    target_date, falling back to a DATE_TOLERANCE_DAYS window. Returns
+    (status, candidates): status is "exact", "tolerance", "none", or
+    "ambiguous" - candidates is only meaningful for "exact"/"tolerance".
+    """
+    same_amount = out[(out["_Amount"] == target_amount) & (out["_Amount"] > 0)]
+    exact = same_amount[same_amount["_Date"] == target_date]
+
+    if len(exact) == 1:
+        return "exact", exact
+    if len(exact) > 1:
+        return "ambiguous", exact
+
+    window = same_amount[
+        (same_amount["_Date"] >= target_date - timedelta(days=DATE_TOLERANCE_DAYS))
+        & (same_amount["_Date"] <= target_date + timedelta(days=DATE_TOLERANCE_DAYS))
+    ]
+    if len(window) == 1:
+        return "tolerance", window
+    if len(window) == 0:
+        return "none", window
+    return "ambiguous", window
+
+
 def match_dividend_income(unified: pd.DataFrame, dividend_events: pd.DataFrame) -> tuple[pd.DataFrame, dict[str, object]]:
     """
     Cross-reference real investment-side dividend events (the authoritative
@@ -117,6 +173,7 @@ def match_dividend_income(unified: pd.DataFrame, dividend_events: pd.DataFrame) 
         "dividend_events": len(dividend_events),
         "matched": 0,
         "matched_via_date_tolerance": 0,
+        "matched_via_local_currency_fallback": 0,
         "fields_updated": 0,
         "skipped_review_notes": 0,
         "unmatched": [],
@@ -128,28 +185,28 @@ def match_dividend_income(unified: pd.DataFrame, dividend_events: pd.DataFrame) 
         target_date = event["TradeDate"]
         instrument = event.get("NormalizedInstrument", "")
 
-        same_amount = out[(out["_Amount"] == target_amount) & (out["_Amount"] > 0)]
-        exact = same_amount[same_amount["_Date"] == target_date]
+        status, candidates = _find_amount_date_match(out, target_amount, target_date)
 
-        if len(exact) == 1:
-            candidates = exact
-        elif len(exact) == 0:
-            window = same_amount[
-                (same_amount["_Date"] >= target_date - timedelta(days=DATE_TOLERANCE_DAYS))
-                & (same_amount["_Date"] <= target_date + timedelta(days=DATE_TOLERANCE_DAYS))
-            ]
-            if len(window) == 1:
-                candidates = window
-                stats["matched_via_date_tolerance"] += 1
-            elif len(window) == 0:
-                stats["unmatched"].append((instrument, target_date.strftime("%Y-%m-%d"), target_amount))
-                continue
-            else:
-                stats["ambiguous"].append((instrument, target_date.strftime("%Y-%m-%d"), target_amount, len(window)))
-                continue
-        else:
-            stats["ambiguous"].append((instrument, target_date.strftime("%Y-%m-%d"), target_amount, len(exact)))
+        if status == "none":
+            # Real gap found and fixed: this project's own EUR estimate can
+            # be a cent or two off from what OP's real SEK->EUR conversion
+            # actually booked into the bank transaction. Only tried as a
+            # fallback after the estimate genuinely finds nothing, so an
+            # already-working exact-estimate match is never disturbed.
+            fallback_amount = _real_net_eur_from_local_currency(event)
+            if fallback_amount is not None and fallback_amount != target_amount:
+                status, candidates = _find_amount_date_match(out, fallback_amount, target_date)
+                if status in ("exact", "tolerance"):
+                    stats["matched_via_local_currency_fallback"] += 1
+
+        if status == "ambiguous":
+            stats["ambiguous"].append((instrument, target_date.strftime("%Y-%m-%d"), target_amount, len(candidates)))
             continue
+        if status == "none":
+            stats["unmatched"].append((instrument, target_date.strftime("%Y-%m-%d"), target_amount))
+            continue
+        if status == "tolerance":
+            stats["matched_via_date_tolerance"] += 1
 
         idx = candidates.index[0]
 
@@ -225,7 +282,8 @@ def enrich_dividend_income(
         rows_updated=stats["matched"],
         status="Completed",
         details=(
-            f"Dividend events checked: {stats['dividend_events']}; matched: {stats['matched']}; "
+            f"Dividend events checked: {stats['dividend_events']}; matched: {stats['matched']} "
+            f"(of which via local-currency fallback: {stats['matched_via_local_currency_fallback']}); "
             f"fields updated: {stats['fields_updated']}; unmatched: {len(stats['unmatched'])}; "
             f"ambiguous: {len(stats['ambiguous'])}; skipped (Review/Notes set): {stats['skipped_review_notes']}"
         ),
@@ -269,6 +327,7 @@ def main() -> None:
     print(f"Dividend events checked (OP-held only): {stats['dividend_events']}")
     print(f"Matched:                                {stats['matched']}")
     print(f"  of which via date-tolerance match:    {stats['matched_via_date_tolerance']}")
+    print(f"  of which via local-currency fallback: {stats['matched_via_local_currency_fallback']}")
     print(f"Fields updated:                         {stats['fields_updated']}")
     print(f"Skipped (Review/Notes already set):     {stats['skipped_review_notes']}")
 
