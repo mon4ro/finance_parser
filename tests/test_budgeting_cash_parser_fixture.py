@@ -18,11 +18,11 @@ def test_cash_fixture_parses_expected_fields():
     assert row["SourceBank"] == "CASH"
     assert row["SourceAccount"] == "CASH"
     assert row["Amount"] == -5
-    assert row["RawReceiver"] == "Yksityishenkilö"
+    assert row["RawReceiver"] == "Kioski"
     assert row["Currency"] == "EUR"
-    assert row["ValueDate"] == "2026-05-09"
-    assert row["BookingDate"] == "2026-05-09"
-    assert row["ExportDate"] == "2026-09-13"
+    assert row["ValueDate"] == "2026-01-15"
+    assert row["BookingDate"] == "2026-01-15"
+    assert row["ExportDate"] == "2026-01-20"
     assert row["RawID"].startswith("CASH-")
 
     # "Source" (whose cash) is deliberately not part of the canonical raw
