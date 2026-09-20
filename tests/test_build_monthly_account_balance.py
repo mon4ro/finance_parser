@@ -430,3 +430,76 @@ budgeting:
     by_month = dict(zip(rows["MonthEnd"], rows["Balance"]))
     # Only the real +200 counts, NOT the -500 pending hold.
     assert by_month["2026-02-28"] == 1200.0
+
+
+def test_sparse_activity_opt_in_bridges_gaps_correctly(tmp_path):
+    """
+    Real feature added: a genuinely low-activity account (real case: a
+    child's occasional-gift savings account) can have real, multi-month
+    stretches with zero transactions that are NOT an unimported gap - just
+    real dormancy. Opting an account in via settings skips the gap-guard,
+    but the underlying math is unchanged: walking back past an earlier real
+    transaction cluster still correctly subtracts it, rather than just
+    repeating the seed's own value everywhere.
+    """
+    path = tmp_path / "ParsedTransactions.xlsx"
+    _write_raw(path, [
+        {"SourceAccount": "CHILD", "SourceBank": "OP", "BookingDate": "2025-01-15", "Amount": 50},
+        # 2025-02 through 2025-11 and 2026-01/2026-02: real, months-long gaps.
+        {"SourceAccount": "CHILD", "SourceBank": "OP", "BookingDate": "2025-12-10", "Amount": 100},
+        {"SourceAccount": "CHILD", "SourceBank": "OP", "BookingDate": "2025-12-20", "Amount": 45},
+        # Proves March 2026 (the seed's own month) is "closed" - a later
+        # transaction exists proving the import continued past it.
+        {"SourceAccount": "CHILD", "SourceBank": "OP", "BookingDate": "2026-04-05", "Amount": 10},
+    ])
+    settings = _settings_with_seeds(
+        """
+budgeting:
+  sparse_activity_accounts:
+    - CHILD
+  account_balance_seeds:
+    CHILD:
+      "2026-03-31": 900.0
+""",
+        tmp_path,
+    )
+
+    result, stats = build_monthly_balances(path, settings, as_of=date(2026, 5, 1))
+
+    rows = result[result["SourceAccount"] == "CHILD"]
+    by_month = dict(zip(rows["MonthEnd"], rows["Balance"]))
+    # Bridges the Jan-Feb 2026 gap correctly - no change since the seed.
+    assert by_month["2026-02-28"] == 900.0
+    assert by_month["2025-12-31"] == 900.0
+    # Walking further back past the real Dec 2025 cluster (+145) subtracts
+    # it, rather than just repeating 900 forever - proves this isn't a
+    # blind "fill everywhere with the seed" shortcut.
+    assert by_month["2025-11-30"] == 755.0
+    assert by_month["2025-01-31"] == 755.0
+
+
+def test_sparse_activity_opt_in_is_per_account_not_global(tmp_path):
+    """The SAME gap shape on an account that is NOT opted in must still get
+    the conservative treatment - proves the relaxation is properly scoped,
+    not an accidental global change."""
+    path = tmp_path / "ParsedTransactions.xlsx"
+    _write_raw(path, [
+        {"SourceAccount": "CHILD", "SourceBank": "OP", "BookingDate": "2025-01-15", "Amount": 50},
+        {"SourceAccount": "CHILD", "SourceBank": "OP", "BookingDate": "2025-12-10", "Amount": 100},
+        {"SourceAccount": "CHILD", "SourceBank": "OP", "BookingDate": "2025-12-20", "Amount": 45},
+        {"SourceAccount": "CHILD", "SourceBank": "OP", "BookingDate": "2026-04-05", "Amount": 10},
+    ])
+    settings = _settings_with_seeds(
+        """
+budgeting:
+  account_balance_seeds:
+    CHILD:
+      "2026-03-31": 900.0
+""",
+        tmp_path,
+    )
+
+    result, stats = build_monthly_balances(path, settings, as_of=date(2026, 5, 1))
+
+    rows = result[result["SourceAccount"] == "CHILD"]
+    assert list(rows["MonthEnd"]) == ["2026-03-31"]

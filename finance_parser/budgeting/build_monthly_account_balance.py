@@ -280,7 +280,16 @@ def build_monthly_balances(
         earliest_seed_date = pd.Timestamp(seeds[0][0])
         start = min(earliest_transaction_date, earliest_seed_date)
         candidate_months = month_end_dates(start, account_last_month_end)
-        months = _reliable_reconstructed_months(group, candidate_months, seeds)
+        if settings.trusts_sparse_activity(account):
+            # Explicit per-account opt-in (see AppSettings.trusts_sparse_
+            # activity's own docstring) - skip the gap-guard entirely for
+            # this account. The underlying math is unaffected: a month-end
+            # whose window crosses real transactions still correctly
+            # subtracts/adds them; only the "was every month covered"
+            # safety check is skipped.
+            months = candidate_months
+        else:
+            months = _reliable_reconstructed_months(group, candidate_months, seeds)
         account_rows = _reconstructed_balance_rows(account, group, months, seeds, owners)
         if account_rows:
             stats["accounts_processed"].append(account)

@@ -220,6 +220,26 @@ class AppSettings:
 
         return sorted(seeds, key=lambda pair: pair[0])
 
+    def trusts_sparse_activity(self, source_account: object) -> bool:
+        """
+        Explicit per-account opt-in: trust backward/forward balance
+        reconstruction across calendar months with zero real transactions
+        for this account, instead of the default conservative gap-guard
+        (see build_monthly_account_balance.py's _reliable_reconstructed_
+        months(), which can't otherwise tell "genuinely dormant" apart from
+        "unimported gap" from the data alone). Deliberately opt-in, per
+        account, not a global default - a real multi-year unimported gap on
+        a normally-active account is exactly the failure mode the guard
+        exists to catch; this is only safe for an account the user
+        personally knows is genuinely low-activity (e.g. a child's
+        occasional-gift savings account).
+        """
+        account_key = _normalise_key(source_account)
+        accounts = self.get("budgeting", "sparse_activity_accounts", default=[])
+        if not isinstance(accounts, list):
+            return False
+        return account_key in {_normalise_key(a) for a in accounts}
+
 
 _SETTINGS_CACHE: AppSettings | None = None
 

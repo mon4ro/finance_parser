@@ -165,3 +165,34 @@ def test_example_settings_has_no_account_balance_seeds_leak_risk():
     )
 
     assert settings.get("budgeting", "account_balance_seeds", default={}) == {}
+
+
+def test_trusts_sparse_activity_reads_configured_accounts(tmp_path):
+    settings_path = tmp_path / "settings.yaml"
+    settings_path.write_text(
+        "budgeting:\n  sparse_activity_accounts:\n    - CHILD\n",
+        encoding="utf-8",
+    )
+    settings = AppSettings.load(settings_path=settings_path, example_path=DEFAULT_EXAMPLE_SETTINGS_PATH)
+
+    assert settings.trusts_sparse_activity("CHILD") is True
+    assert settings.trusts_sparse_activity("HOUSEHOLD") is False
+
+
+def test_trusts_sparse_activity_defaults_to_false_when_unconfigured(tmp_path):
+    settings_path = tmp_path / "settings.yaml"
+    settings_path.write_text("budgeting:\n  default_include: 'YES'\n", encoding="utf-8")
+    settings = AppSettings.load(settings_path=settings_path, example_path=DEFAULT_EXAMPLE_SETTINGS_PATH)
+
+    assert settings.trusts_sparse_activity("ANY_ACCOUNT") is False
+
+
+def test_example_settings_has_no_sparse_activity_accounts_leak_risk():
+    """Same real incident class as portfolio_types/account_balance_seeds
+    above - must stay absent/empty in the example file."""
+    settings = AppSettings.load(
+        settings_path=Path("does-not-exist-user-settings.yaml"),
+        example_path=DEFAULT_EXAMPLE_SETTINGS_PATH,
+    )
+
+    assert settings.get("budgeting", "sparse_activity_accounts", default=[]) == []
