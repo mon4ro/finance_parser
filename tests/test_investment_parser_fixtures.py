@@ -39,8 +39,8 @@ def test_seligson_fixture_parses_manual_excel():
     row = df.iloc[0]
 
     assert row["Broker"] == "SELIGSON"
-    assert row["Portfolio"] == "58258"
-    assert row["InstrumentName"] == "SELIGSON 58258"
+    assert row["Portfolio"] == "99999"
+    assert row["InstrumentName"] == "SELIGSON 99999"
     assert row["TransactionTypeRaw"] == "MERKINTÄ"
     # Seligson's own "Summa" column is positive for a subscription (fund's
     # own perspective) - CashAmount must be the investor's cash flow
@@ -59,8 +59,8 @@ def test_seligson_raw_id_is_hashed_from_pre_flip_cash_amount_not_stored_value():
     explicit override or by directly hashing the same raw value.
     """
     row = pd.Series({
-        "Portfolio": "58258", "ValueDate": "1.6.2026", "SeligsonTransactionNumber": "123456",
-        "InstrumentName": "SELIGSON 58258", "Quantity": 2.5, "UnitPrice": 10.0,
+        "Portfolio": "99999", "ValueDate": "1.6.2026", "SeligsonTransactionNumber": "123456",
+        "InstrumentName": "SELIGSON 99999", "Quantity": 2.5, "UnitPrice": 10.0,
         "CashAmount": -25.0,  # the flipped, stored value
     })
 
@@ -76,7 +76,7 @@ def test_seligson_redemption_row_flips_the_other_way(tmp_path):
     investor CashAmount - money received, mirroring a real SELL."""
     path = tmp_path / "seligson_redemption.xlsx"
     df = pd.DataFrame([{
-        "Salkku": "58258", "Arvopäivä": "1.6.2026", "Tapahtumanumero": "999",
+        "Salkku": "99999", "Arvopäivä": "1.6.2026", "Tapahtumanumero": "999",
         "Osuuden arvo": "10,00", "Osuuksien määrä": "-2,5", "Arvo yhteensä (€)": "-25,00",
         "Palkkio (€)": "0,00", "Summa (€)": "-25,00",
     }])
@@ -339,7 +339,7 @@ investments:
         assert evli_df.iloc[0]["InstrumentName"] == "ACME"
 
         seligson_df = seligson.parse_file(FIXTURES / "seligson_sample.xlsx", "2026-06-04 12:00:00")
-        assert seligson_df.iloc[0]["InstrumentName"] == "CUSTOM FUND 58258"
+        assert seligson_df.iloc[0]["InstrumentName"] == "CUSTOM FUND 99999"
     finally:
         settings_module._SETTINGS_CACHE = old_cache
 

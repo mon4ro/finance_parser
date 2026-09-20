@@ -35,7 +35,7 @@ def test_op_budgeting_fixture_parses_sourceaccount_from_filename():
     assert row["SourceBank"] == "OP"
     assert row["SourceAccount"] == "HOUSEHOLD"
     assert row["Amount"] == -10.0
-    assert row["RawReceiver"] == "PRISMA ESPOO"
+    assert row["RawReceiver"] == "PRISMA"
     assert row["ArchiveID"] == "OPARCH123"
 
 
