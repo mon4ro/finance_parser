@@ -16,9 +16,9 @@ def test_spankki_fixture_parses_expected_fields():
 
     assert row["SourceBank"] == "SPANKKI"
     assert row["SourceAccount"] == "SPANKKI"
-    assert row["Amount"] == -3.09
-    assert row["RawReceiver"] == "S-MARKET VIMPELI"
-    assert row["ArchiveID"] == "20250701390001700000"
+    assert row["Amount"] == -4.50
+    assert row["RawReceiver"] == "S-MARKET"
+    assert row["ArchiveID"] == "20260601990000900000"
 
     raw = spankki.parse_bank_raw_rows(path, "2026-06-04 12:00:00")
     assert raw.iloc[0]["BankRawExportID"].startswith("SPKRAW-")

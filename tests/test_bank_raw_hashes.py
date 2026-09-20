@@ -5,11 +5,11 @@ from parsers import op, norwegian, spankki
 
 def test_spankki_bank_raw_hash_ignores_source_file():
     row = pd.Series({
-        "Arkistointitunnus": "20250701390001700000",
-        "Maksupäivä": "30.6.2025",
-        "Kirjauspäivä": "1.7.2025",
-        "Summa": "-3,09",
-        "Saajan nimi": "S-MARKET VIMPELI",
+        "Arkistointitunnus": "20260601990000900000",
+        "Maksupäivä": "31.5.2026",
+        "Kirjauspäivä": "1.6.2026",
+        "Summa": "-4,50",
+        "Saajan nimi": "S-MARKET",
         "Maksaja": "PERSON X",
         "Tapahtumalaji": "KORTTIOSTO",
     })

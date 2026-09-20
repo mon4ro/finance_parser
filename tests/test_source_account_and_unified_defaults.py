@@ -168,7 +168,7 @@ def test_raw_to_unified_spankki_include_default_from_settings():
         "SourceBank": "SPANKKI",
         "BookingDate": "2026-06-01",
         "ValueDate": "2026-06-01",
-        "Amount": -3.09,
+        "Amount": -4.50,
         "TransactionTypeRaw": "KORTTIOSTO",
         "Description": "KORTTIOSTO",
         "RawReceiver": "S-MARKET",
