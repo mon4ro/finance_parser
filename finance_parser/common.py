@@ -335,6 +335,12 @@ def infer_source_account_from_filename(path: Path, source_bank: str) -> str:
     cleaned = re.sub(r"\d{6,8}.*$", "", cleaned).strip()
     cleaned = cleaned.replace("_", " ").replace("-", " ").strip()
     cleaned = re.sub(r"\s+", " ", cleaned)
+    # "Tili" is the generic Finnish word for "account" - a real, common
+    # filename prefix (e.g. "Tili_<name>_tapahtumat...") that isn't part of
+    # the actual account name. Real bug this fixes: an account with no
+    # explicit filename_prefixes settings.yaml entry yet fell through to
+    # this fallback and got named "TILI <name>" instead of just <name>.
+    cleaned = re.sub(r"^TILI\s+", "", cleaned).strip()
 
     return cleaned or bank
 

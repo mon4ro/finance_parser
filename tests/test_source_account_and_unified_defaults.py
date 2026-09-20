@@ -15,6 +15,18 @@ def test_op_filename_source_account_inference():
     assert infer_source_account_from_filename(Path("CHILD_tapahtumat20260503-20260603-2.csv"), "OP") == "CHILD"
 
 
+def test_op_filename_with_generic_tili_prefix_strips_it():
+    """
+    Real bug found and fixed: a newer account with no explicit
+    filename_prefixes settings.yaml entry yet fell through to the
+    conservative fallback and got named "TILI <name>" instead of just
+    <name> - "Tili" is just the generic Finnish word for "account" in the
+    real filename convention ("Tili_<name>_tapahtumat..."), not part of the
+    actual account name.
+    """
+    assert infer_source_account_from_filename(Path("Tili_CHILD_tapahtumat20260703-20260722.csv"), "OP") == "CHILD"
+
+
 def test_canonical_source_account_repairs_polluted_labels():
     assert canonical_source_account("HOUSEHOLD TAPAHTUMAT20260501 20260603", "OP") == "HOUSEHOLD"
     assert canonical_source_account("PERSONAL TAPAHTUMAT20260503 20260603", "OP") == "PERSONAL"
