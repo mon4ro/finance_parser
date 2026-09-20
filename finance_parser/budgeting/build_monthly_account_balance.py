@@ -31,6 +31,15 @@ MONTHLY_BALANCE_COLUMNS = ["MonthEnd", "Year", "Month", "SourceAccount", "Owner"
 RAW_EXPORT_SOURCE = "RAW_EXPORT"
 RECONSTRUCTED_SOURCE = "RECONSTRUCTED"
 
+# A pending card-authorisation hold (real case: Norwegian, a credit card) -
+# not a settled transaction, and its own real BookingDate is blank in the
+# export (only ValueDate is populated) since it hasn't posted yet. That
+# already excludes it from the date-filtered group today, but only as a
+# side effect of being dateless - explicitly filtering by type here means
+# this stays correct even if a future export ever gives a pending hold a
+# real BookingDate.
+KATEVARAUS_TRANSACTION_TYPES = {"KATEVARAUS"}
+
 
 def last_completed_month_end(today: date) -> pd.Timestamp:
     first_of_this_month = pd.Timestamp(today).replace(day=1)
@@ -220,6 +229,12 @@ def build_monthly_balances(
         # inflating several months' reconstructed balance by exactly their
         # own summed amount.
         group = group[group["SourceBank"] != INVESTMENT_DIVIDEND_SOURCE_BANK]
+        # Real bug this fixes: a credit card's pending card-authorisation
+        # hold (katevaraus) isn't a real settled transaction - explicit by
+        # type, not just relying on it happening to have a blank date (see
+        # KATEVARAUS_TRANSACTION_TYPES above).
+        if "TransactionTypeRaw" in group.columns:
+            group = group[~group["TransactionTypeRaw"].astype(str).str.strip().str.upper().isin(KATEVARAUS_TRANSACTION_TYPES)]
         if len(group) == 0:
             continue
 

@@ -395,3 +395,38 @@ budgeting:
     # Feb: seed (1000) + real -30 (Jan 15, already baked into seed) is
     # already excluded; only the real +200 counts, NOT the +500 dividend row.
     assert by_month["2026-02-28"] == 1200.0
+
+
+def test_katevaraus_pending_hold_never_counts_toward_balance(tmp_path):
+    """
+    Real bug found and fixed: a credit card's pending card-authorisation
+    hold (katevaraus) isn't a real settled transaction. In real data it
+    has a blank BookingDate (only ValueDate is populated), which already
+    excludes it from the date-filtered group as a side effect - but this
+    test gives it a real BookingDate anyway, proving the exclusion is
+    explicit by transaction type and doesn't just accidentally rely on a
+    blank date that a future export format could stop guaranteeing.
+    """
+    path = tmp_path / "ParsedTransactions.xlsx"
+    _write_raw(path, [
+        {"SourceAccount": "HOUSEHOLD", "SourceBank": "OP", "BookingDate": "2026-01-15", "Amount": -30},
+        {"SourceAccount": "HOUSEHOLD", "SourceBank": "OP", "BookingDate": "2026-02-01", "TransactionTypeRaw": "Katevaraus", "Amount": -500},
+        {"SourceAccount": "HOUSEHOLD", "SourceBank": "OP", "BookingDate": "2026-02-10", "Amount": 200},
+        {"SourceAccount": "HOUSEHOLD", "SourceBank": "OP", "BookingDate": "2026-03-01", "Amount": 1},
+    ])
+    settings = _settings_with_seeds(
+        """
+budgeting:
+  account_balance_seeds:
+    HOUSEHOLD:
+      "2026-01-15": 1000.0
+""",
+        tmp_path,
+    )
+
+    result, stats = build_monthly_balances(path, settings, as_of=date(2026, 3, 5))
+
+    rows = result[result["SourceAccount"] == "HOUSEHOLD"]
+    by_month = dict(zip(rows["MonthEnd"], rows["Balance"]))
+    # Only the real +200 counts, NOT the -500 pending hold.
+    assert by_month["2026-02-28"] == 1200.0
