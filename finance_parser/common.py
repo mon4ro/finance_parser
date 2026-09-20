@@ -953,8 +953,51 @@ def read_xlsx_xml_direct(path: Path, required_columns: list[str] | None = None) 
             if lname(item.tag) == name:
                 yield item
 
+    def sheet_display_names(z: zipfile.ZipFile) -> dict[str, str]:
+        """
+        Map each internal worksheet path (e.g. "xl/worksheets/sheet2.xml")
+        to its human-readable Excel tab name, best-effort. Without this, a
+        diagnostic naming a specific sheet (the merge message, or the
+        excluded-sheet warning below) is useless to a human trying to go
+        open that exact tab and check it - "sheet2.xml" tells them nothing,
+        the real tab name does. Never raises: any parse failure just means
+        callers fall back to the raw internal path.
+        """
+        names = z.namelist()
+        if "xl/workbook.xml" not in names or "xl/_rels/workbook.xml.rels" not in names:
+            return {}
+        try:
+            workbook_root = ET.fromstring(z.read("xl/workbook.xml"))
+            rels_root = ET.fromstring(z.read("xl/_rels/workbook.xml.rels"))
+        except Exception:
+            return {}
+
+        rid_to_target: dict[str, str] = {}
+        for rel in rels_root:
+            if lname(rel.tag) != "Relationship":
+                continue
+            rid = rel.attrib.get("Id")
+            target = rel.attrib.get("Target", "")
+            if rid and target:
+                # Target is normally relative to xl/ (e.g. "worksheets/sheet1.xml"),
+                # but some writers (openpyxl included) emit an absolute-style
+                # "/xl/worksheets/sheet1.xml" instead - strip any leading slash
+                # first so both forms end up as the same "xl/..." zip member path.
+                normalised = target.lstrip("/")
+                rid_to_target[rid] = normalised if normalised.startswith("xl/") else f"xl/{normalised}"
+
+        display_names: dict[str, str] = {}
+        for sheet_el in iter_named(workbook_root, "sheet"):
+            sheet_name_attr = sheet_el.attrib.get("name", "")
+            rid = next((v for k, v in sheet_el.attrib.items() if k.endswith("}id") or k == "id"), None)
+            if rid and rid in rid_to_target:
+                display_names[rid_to_target[rid]] = sheet_name_attr
+
+        return display_names
+
     with zipfile.ZipFile(path) as z:
         names = z.namelist()
+        display_names = sheet_display_names(z)
 
         worksheet_names = sorted(
             n for n in names
@@ -1145,24 +1188,48 @@ def read_xlsx_xml_direct(path: Path, required_columns: list[str] | None = None) 
         # best-matching sheet was ever kept - found via a real dry-run.
         qualifying_threshold = min(3, len(required_columns)) if required_columns else best_score
         merged_sheets = [best_sheet]
+        excluded_sheets: list[tuple[str, int]] = []
         frames = [best_df]
         for sheet_name, candidate, score in candidates:
             if sheet_name == best_sheet:
                 continue
             if required_columns and score < qualifying_threshold:
+                excluded_sheets.append((sheet_name, len(candidate)))
                 continue
             if set(candidate.columns) != set(best_df.columns):
+                excluded_sheets.append((sheet_name, len(candidate)))
                 continue
             frames.append(candidate.reindex(columns=best_df.columns))
             merged_sheets.append(sheet_name)
 
         result = pd.concat(frames, ignore_index=True) if len(frames) > 1 else best_df
 
+        def display(sheet_name: str) -> str:
+            return display_names.get(sheet_name, sheet_name)
+
         if len(merged_sheets) > 1:
             print(
                 f"Read {path.name} by namespace-agnostic direct XLSX XML fallback, "
-                f"merging {len(merged_sheets)} matching sheets: {', '.join(merged_sheets)}"
+                f"merging {len(merged_sheets)} matching sheets: "
+                f"{', '.join(display(s) for s in merged_sheets)}"
             )
+        # Real bug this surfaces proactively instead of requiring a manual,
+        # one-off check every time a multi-sheet file shows up: a sheet
+        # with real rows but a different shape (extra/missing columns, no
+        # recognisable header) gets correctly excluded from the merge, but
+        # that's exactly the shape a genuine historical-data sheet took
+        # once (see the merge fix above) - flag it loudly so a human
+        # verifies it's really fine to skip, rather than silently trusting
+        # the shape-mismatch heuristic every time.
+        non_empty_excluded = [(name, count) for name, count in excluded_sheets if count > 0]
+        if non_empty_excluded:
+            print(
+                f"WARNING: {path.name} has {len(non_empty_excluded)} sheet(s) with real rows that "
+                "were NOT merged in (different shape/header from the sheet actually used) - please "
+                "check these for data loss:"
+            )
+            for name, count in non_empty_excluded:
+                print(f"  - {display(name)}: {count} row(s)")
         else:
             print(f"Read {path.name} by namespace-agnostic direct XLSX XML fallback from {best_sheet}")
         return result

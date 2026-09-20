@@ -63,13 +63,17 @@ def test_multiple_sheets_with_matching_columns_are_merged(tmp_path):
     assert set(df["Receiver"]) == {"Shop A", "Shop C", "Shop D", "Shop E"}
 
 
-def test_sheet_with_different_column_layout_is_not_merged(tmp_path):
+def test_sheet_with_different_column_layout_is_not_merged(tmp_path, capsys):
     """
     A sheet with a genuinely different shape (e.g. a summary/pivot tab, or
     a differently-structured export with extra leading columns and no
     recognisable header) must not be blindly merged in just because it also
     happens to produce some rows - only sheets matching the primary sheet's
-    exact column set are merged.
+    exact column set are merged. It IS still flagged with a loud warning
+    though - real case this protects against: a genuine historical-data
+    sheet once took exactly this shape (see the merge fix), so a human
+    should get the chance to verify a shape-mismatched sheet with real rows
+    isn't actually real data being silently left out.
     """
     path = tmp_path / "mixed.xlsx"
     _write_workbook(path, {
@@ -89,8 +93,13 @@ def test_sheet_with_different_column_layout_is_not_merged(tmp_path):
     assert len(df) == 2
     assert set(df["Receiver"]) == {"Shop A", "Shop B"}
 
+    captured = capsys.readouterr()
+    assert "WARNING" in captured.out
+    assert "SummaryTab" in captured.out
+    assert "1 row" in captured.out
 
-def test_empty_sheets_are_ignored(tmp_path):
+
+def test_empty_sheets_are_ignored(tmp_path, capsys):
     path = tmp_path / "with_empty.xlsx"
     _write_workbook(path, {
         "MainData": [
@@ -103,3 +112,5 @@ def test_empty_sheets_are_ignored(tmp_path):
     df = read_xlsx_xml_direct(path, required_columns=REQUIRED)
 
     assert len(df) == 1
+    captured = capsys.readouterr()
+    assert "WARNING" not in captured.out
