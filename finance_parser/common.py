@@ -668,12 +668,16 @@ def sheet_to_dataframe(path: Path, sheet_name: str, columns: list[str]) -> pd.Da
         df["SourceAccount"] = df["Source"]
 
     if "SourceBank" in columns and "SourceBank" not in df.columns:
-        df["SourceBank"] = df.apply(infer_source_bank_from_existing_row, axis=1)
+        df["SourceBank"] = df.apply(canonical_source_bank, axis=1)
 
     if "SourceBank" in columns and "SourceBank" in df.columns:
         blank_source_bank = df["SourceBank"].isna() | (df["SourceBank"].astype(str).str.strip() == "")
         if blank_source_bank.any():
-            inferred = df.loc[blank_source_bank].apply(infer_source_bank_from_existing_row, axis=1)
+            # canonical_source_bank() returns "" when nothing can be reliably
+            # inferred (e.g. an ImportLog row for a skipped/unsupported file
+            # that was never actually associated with any bank) - blank stays
+            # blank, correctly, rather than guessing.
+            inferred = df.loc[blank_source_bank].apply(canonical_source_bank, axis=1)
             df.loc[blank_source_bank, "SourceBank"] = inferred
 
     # v11 Nordea migration: normalise existing Nordea rows created by older
