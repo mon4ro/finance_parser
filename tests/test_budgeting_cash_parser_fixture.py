@@ -1,6 +1,7 @@
 from pathlib import Path
 
 from finance_parser.budgeting.parsers import cash
+from finance_parser.common import transaction_type_for_source_bank
 
 
 FIXTURES = Path(__file__).resolve().parent / "fixtures" / "budgeting"
@@ -97,6 +98,68 @@ def test_bank_raw_export_id_stable_across_date_cell_type(tmp_path):
     raw_native = cash.parse_bank_raw_rows(native_path, "2026-09-13 12:00:00")
 
     assert raw_text.iloc[0]["BankRawExportID"] == raw_native.iloc[0]["BankRawExportID"]
+
+
+def test_vinted_prefixed_entry_id_gets_vinted_source_bank_and_raw_id(tmp_path):
+    from openpyxl import Workbook
+
+    path = tmp_path / "cash_with_vinted_rows.xlsx"
+    wb = Workbook()
+    ws = wb.active
+    ws.title = "CashEntries"
+    ws.append(["EntryID", "Date", "Source", "Amount", "Currency", "Description", "RawReceiver", "ExportDate"])
+    ws.append(["CASH-0001", "2026-05-09", "PERSON_A", -5, "EUR", "Kioski snack", "Kioski", "2026-09-13"])
+    ws.append(["VINTED-0001", "2026-03-12", "PERSON_B", 20, "EUR", "Vinted sale: Test jacket", "VINTED", "2026-09-20"])
+    ws.append(["VINTED-0002", "2026-03-16", "PERSON_B", -8, "EUR", "Vinted purchase: Test onesie", "VINTED", "2026-09-20"])
+    wb.save(path)
+
+    df = cash.parse_file(path, "2026-09-20 12:00:00")
+    # EntryID is internal-only (used for hashing) and not part of RAW_COLUMNS
+    # - see test_cash_fixture_parses_expected_fields's "Source" check above
+    # for the same pattern - so rows are identified by Description here.
+
+    physical = df[df["Description"] == "Kioski snack"].iloc[0]
+    assert physical["SourceBank"] == "CASH"
+    assert physical["SourceAccount"] == "CASH"
+    assert physical["RawID"].startswith("CASH-")
+
+    sale = df[df["Description"] == "Vinted sale: Test jacket"].iloc[0]
+    assert sale["SourceBank"] == "VINTED"
+    assert sale["SourceAccount"] == "CASH"
+    assert sale["RawID"].startswith("VINTED-")
+
+    purchase = df[df["Description"] == "Vinted purchase: Test onesie"].iloc[0]
+    assert purchase["SourceBank"] == "VINTED"
+    assert purchase["Amount"] == -8
+
+
+def test_vinted_prefixed_entry_id_reflected_in_bank_raw_export(tmp_path):
+    from openpyxl import Workbook
+
+    path = tmp_path / "cash_with_vinted_rows.xlsx"
+    wb = Workbook()
+    ws = wb.active
+    ws.title = "CashEntries"
+    ws.append(["EntryID", "Date", "Source", "Amount", "Currency", "Description", "RawReceiver", "ExportDate"])
+    ws.append(["CASH-0001", "2026-05-09", "PERSON_A", -5, "EUR", "Kioski snack", "Kioski", "2026-09-13"])
+    ws.append(["VINTED-0001", "2026-03-12", "PERSON_B", 20, "EUR", "Vinted sale: Test jacket", "VINTED", "2026-09-20"])
+    wb.save(path)
+
+    raw = cash.parse_bank_raw_rows(path, "2026-09-20 12:00:00")
+
+    physical = raw[raw["EntryID"] == "CASH-0001"].iloc[0]
+    assert physical["SourceBank"] == "CASH"
+
+    sale = raw[raw["EntryID"] == "VINTED-0001"].iloc[0]
+    assert sale["SourceBank"] == "VINTED"
+    assert sale["BankRawExportID"].startswith("CASHRAW-")
+
+
+def test_transaction_type_for_vinted_source_bank_is_virtual():
+    assert transaction_type_for_source_bank("VINTED") == "Virtual"
+    assert transaction_type_for_source_bank("vinted") == "Virtual"
+    assert transaction_type_for_source_bank("CASH") == "Cash"
+    assert transaction_type_for_source_bank("OP") == "Bank"
 
 
 def test_cash_raw_ids_differ_for_same_content_different_entry_id(tmp_path):

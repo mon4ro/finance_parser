@@ -586,11 +586,18 @@ def transaction_type_for_source_bank(source_bank: object) -> str:
     Return the UnifiedTransactions TransactionType for a given SourceBank.
 
     Bank-sourced imports are "Bank"; manually entered cash-ledger rows are
-    "Cash". Manual SPLIT rows are created afterward, directly in Excel, and
-    are not covered here.
+    "Cash"; a virtual-wallet marketplace entry (e.g. Vinted, hand-entered
+    into the same CashEntries.xlsx ledger under a VINTED- EntryID prefix -
+    see cash.py) is "Virtual" - real money, but with no real bank statement/
+    balance to reconcile against, distinct from both a bank account and a
+    physical cash entry. Manual SPLIT rows are created afterward, directly
+    in Excel, and are not covered here.
     """
-    if normalise_text(source_bank).upper() == "CASH":
+    bank = normalise_text(source_bank).upper()
+    if bank == "CASH":
         return "Cash"
+    if bank == "VINTED":
+        return "Virtual"
     return "Bank"
 
 

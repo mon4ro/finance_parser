@@ -18,7 +18,7 @@ from finance_parser.common import (
 
 SOURCE_BANK = "CASH"
 BANK_RAW_SHEET = "CashRawExport"
-# RawID prefix: CASH-
+# RawID prefix: CASH- (or VINTED- - see source_bank_for_entry_id below)
 
 # CashEntries.xlsx is a manually maintained ledger, not a bank export: the
 # user hand-types one row per cash transaction (see input/budgeting/CashEntries.xlsx).
@@ -27,6 +27,24 @@ BANK_RAW_SHEET = "CashRawExport"
 # two genuinely different cash purchases with identical date/amount/receiver
 # text would otherwise hash to the same RawID and silently collapse into one
 # transaction during dedup.
+#
+# Vinted marketplace sales/purchases/refunds/withdrawals are hand-entered
+# into this same ledger rather than parsed from a real Vinted export - there
+# is no reliable machine-readable export to build a standing parser against
+# (the one seen was LLM-reconstructed from screenshots, not authoritative).
+# They're distinguished purely by an EntryID prefix (VINTED-0001, ...) the
+# user/whoever enters the rows commits to using: SourceAccount stays CASH
+# (neither a Vinted virtual wallet nor physical cash has a real bank
+# statement/balance to reconcile against), but SourceBank becomes VINTED
+# instead of CASH, so TransactionType reads "Virtual" (see
+# transaction_type_for_source_bank in common.py) and content-based
+# CategoryRules/TransactionRules can scope narrowly to just these rows via
+# SourceBank, without inventing any new parser-level Include/Owner/category
+# logic (still just RAW_COLUMNS - normal Include/Owner/category rules apply
+# exactly like any other source).
+VINTED_SOURCE_BANK = "VINTED"
+VINTED_ENTRY_ID_PREFIX = "VINTED-"
+
 CASH_COLUMNS = [
     "EntryID",
     "Date",
@@ -56,8 +74,19 @@ def can_parse(path: Path) -> tuple[bool, str]:
         return False, str(exc)
 
 
+def source_bank_for_entry_id(entry_id: object) -> str:
+    if normalise_text(entry_id).upper().startswith(VINTED_ENTRY_ID_PREFIX):
+        return VINTED_SOURCE_BANK
+    return SOURCE_BANK
+
+
 def make_raw_id(row: pd.Series) -> str:
-    return "CASH-" + stable_hash([
+    # row is a row of `out` (already-mapped RAW_COLUMNS shape) at the point
+    # this is applied, so SourceBank is already resolved per-row - reusing
+    # it here (rather than re-deriving from EntryID) keeps the RawID prefix
+    # and the SourceBank column always in agreement.
+    prefix = "VINTED-" if row.get("SourceBank") == VINTED_SOURCE_BANK else "CASH-"
+    return prefix + stable_hash([
         row.get("EntryID", ""),
         format_date(row.get("ValueDate", "")),
         normalise_amount(row.get("Amount", 0)),
@@ -91,7 +120,7 @@ def parse_file(path: Path, imported_at: str) -> pd.DataFrame:
     # only, for audit. Do not use it to infer Owner here.
     out["EntryID"] = df["EntryID"].map(normalise_text)
     out["SourceAccount"] = "CASH"
-    out["SourceBank"] = SOURCE_BANK
+    out["SourceBank"] = df["EntryID"].map(source_bank_for_entry_id)
 
     if "ExportDate" in df.columns:
         parsed_export_dates = df["ExportDate"].map(format_date)
@@ -137,10 +166,13 @@ def make_bank_raw_export_id(row: pd.Series, source_file: str = "") -> str:
     Stable Cash raw-export row identity.
 
     Includes EntryID, since there is no other bank-native identity to lean on
-    for manually entered rows.
+    for manually entered rows. The sheet name/ID prefix stay "CashRawExport"/
+    "CASHRAW-" regardless of SourceBank (one shared audit sheet for the whole
+    file) - only the hash salt varies, so a real CASH-prefixed row's ID is
+    unaffected and a VINTED-prefixed row gets a distinct hash.
     """
     return "CASHRAW-" + stable_hash([
-        SOURCE_BANK,
+        source_bank_for_entry_id(row.get("EntryID", "")),
         row.get("EntryID", ""),
         # format_date() normalises the date regardless of how Excel stored
         # the cell (plain text vs a native date type) - without this, fixing
@@ -169,7 +201,7 @@ def parse_bank_raw_rows(path: Path, imported_at: str) -> pd.DataFrame:
     df.insert(0, "BankRawExportID", [
         make_bank_raw_export_id(row, path.name) for _, row in df.iterrows()
     ])
-    df.insert(1, "SourceBank", SOURCE_BANK)
+    df.insert(1, "SourceBank", df["EntryID"].map(source_bank_for_entry_id))
     df.insert(2, "SourceFile", path.name)
 
     # CashEntries.xlsx already carries its own manually typed ExportDate
