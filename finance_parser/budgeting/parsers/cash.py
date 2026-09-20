@@ -57,6 +57,13 @@ OPTIONAL_METADATA_COLUMNS = [
     "Currency",
     "Description",
     "ExportDate",
+    # Optional, structured alternative to matching content-based rules
+    # against free-text Description: SALE/PURCHASE/WITHDRAWAL/DEPOSIT (or
+    # any other short code) - carried through to UnifiedTransactions as
+    # TransactionTypeRaw, unambiguous and typo-tolerant in a way exact
+    # Description-prefix matching isn't. Optional - a plain physical cash
+    # entry has no need for it and can leave it blank, same as today.
+    "Type",
 ]
 
 REQUIRED_COLUMNS = CASH_COLUMNS
@@ -139,7 +146,9 @@ def parse_file(path: Path, imported_at: str) -> pd.DataFrame:
     out["BookingDate"] = df["Date"].map(format_date)
     out["ValueDate"] = df["Date"].map(format_date)
     out["Amount"] = df["Amount"].map(normalise_amount)
-    out["TransactionTypeRaw"] = ""
+    out["TransactionTypeRaw"] = (
+        df["Type"].map(lambda v: normalise_text(v).upper()) if "Type" in df.columns else ""
+    )
     out["Description"] = df["Description"].map(normalise_text) if "Description" in df.columns else ""
     out["RawReceiver"] = df["RawReceiver"].map(normalise_text)
     out["ReceiverAccount"] = ""

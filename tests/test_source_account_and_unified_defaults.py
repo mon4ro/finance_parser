@@ -117,6 +117,50 @@ def test_raw_to_unified_carries_balance_through(tmp_path):
     assert unified.iloc[0]["Balance"] == 456.78
 
 
+def test_raw_to_unified_carries_transaction_type_raw_through(tmp_path):
+    """
+    Real bug found and fixed: TransactionTypeRaw was already part of
+    RAW_COLUMNS and correctly populated at the raw layer (e.g. Norwegian's
+    KATEVARAUS), but never carried through to UnifiedTransactions at all -
+    a content-based CategoryRules/TransactionRules row needed to key off it
+    directly (CashEntries.xlsx's optional Type column for Vinted-sourced
+    rows) rather than relying on free-text Description matching.
+    """
+    raw = pd.DataFrame([{
+        "RawID": "VINTED-1",
+        "SourceAccount": "CASH",
+        "SourceBank": "VINTED",
+        "BookingDate": "2026-06-01",
+        "ValueDate": "2026-06-01",
+        "Amount": 20.0,
+        "TransactionTypeRaw": "SALE",
+        "Description": "Test jacket",
+        "RawReceiver": "VINTED",
+        "ReceiverAccount": "",
+        "ReceiverBankBIC": "",
+        "Reference": "",
+        "Message": "",
+        "ArchiveID": "",
+        "Balance": "",
+        "CurrencyAmount": "",
+        "Currency": "EUR",
+        "Rate": 1,
+        "MerchantArea": "",
+        "MerchantCategory": "",
+        "ExportDate": "2026-06-01",
+        "ImportedAt": "2026-06-04 12:00:00",
+        "SourceFile": "CashEntries.xlsx",
+    }])
+
+    for col in RAW_COLUMNS:
+        if col not in raw.columns:
+            raw[col] = ""
+
+    unified = raw_to_unified_rows(raw[RAW_COLUMNS])
+
+    assert unified.iloc[0]["TransactionTypeRaw"] == "SALE"
+
+
 def test_raw_to_unified_spankki_include_default_from_settings():
     raw = pd.DataFrame([{
         "RawID": "SPK-1",

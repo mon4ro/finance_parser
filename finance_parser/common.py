@@ -105,6 +105,13 @@ UNIFIED_COLUMNS = [
     # populated there, but never carried through to UnifiedTransactions
     # until build_monthly_account_balance.py needed it.
     "Balance",
+    # Same reasoning as Balance above: already part of RAW_COLUMNS (a
+    # per-source raw type code, e.g. Norwegian's KATEVARAUS), but never
+    # carried through to UnifiedTransactions until a content-based rule
+    # needed to key off it directly (CashEntries.xlsx's optional Type column
+    # - SALE/PURCHASE/WITHDRAWAL/DEPOSIT - for Vinted-sourced rows; see
+    # cash.py) rather than relying on free-text Description matching.
+    "TransactionTypeRaw",
 ]
 
 IMPORT_LOG_COLUMNS = [
@@ -647,6 +654,7 @@ def raw_to_unified_rows(raw_new: pd.DataFrame) -> pd.DataFrame:
             "ImportedAt": row["ImportedAt"],
             "SourceFile": row["SourceFile"],
             "Balance": row.get("Balance", ""),
+            "TransactionTypeRaw": row.get("TransactionTypeRaw", ""),
         })
 
     return pd.DataFrame(rows, columns=UNIFIED_COLUMNS)

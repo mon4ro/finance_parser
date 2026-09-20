@@ -155,6 +155,47 @@ def test_vinted_prefixed_entry_id_reflected_in_bank_raw_export(tmp_path):
     assert sale["BankRawExportID"].startswith("CASHRAW-")
 
 
+def test_optional_type_column_maps_to_transaction_type_raw(tmp_path):
+    from openpyxl import Workbook
+
+    path = tmp_path / "cash_with_type_column.xlsx"
+    wb = Workbook()
+    ws = wb.active
+    ws.title = "CashEntries"
+    ws.append(["EntryID", "Date", "Source", "Amount", "Currency", "Description", "RawReceiver", "Type"])
+    ws.append(["VINTED-0001", "2026-03-12", "PERSON_B", 20, "EUR", "Test jacket", "VINTED", "sale"])
+    ws.append(["VINTED-0002", "2026-03-16", "PERSON_B", -8, "EUR", "Test onesie", "VINTED", "purchase"])
+    ws.append(["CASH-0001", "2026-05-09", "PERSON_A", -5, "EUR", "Kioski snack", "Kioski", ""])
+    wb.save(path)
+
+    df = cash.parse_file(path, "2026-09-20 12:00:00")
+
+    sale = df[df["Description"] == "Test jacket"].iloc[0]
+    assert sale["TransactionTypeRaw"] == "SALE"
+
+    purchase = df[df["Description"] == "Test onesie"].iloc[0]
+    assert purchase["TransactionTypeRaw"] == "PURCHASE"
+
+    physical = df[df["Description"] == "Kioski snack"].iloc[0]
+    assert physical["TransactionTypeRaw"] == ""
+
+
+def test_missing_type_column_defaults_to_blank_transaction_type_raw(tmp_path):
+    from openpyxl import Workbook
+
+    path = tmp_path / "cash_without_type_column.xlsx"
+    wb = Workbook()
+    ws = wb.active
+    ws.title = "CashEntries"
+    ws.append(["EntryID", "Date", "Source", "Amount", "RawReceiver"])
+    ws.append(["CASH-0001", "2026-05-09", "PERSON_A", -5, "Kioski"])
+    wb.save(path)
+
+    df = cash.parse_file(path, "2026-09-20 12:00:00")
+
+    assert df.iloc[0]["TransactionTypeRaw"] == ""
+
+
 def test_transaction_type_for_vinted_source_bank_is_virtual():
     assert transaction_type_for_source_bank("VINTED") == "Virtual"
     assert transaction_type_for_source_bank("vinted") == "Virtual"
