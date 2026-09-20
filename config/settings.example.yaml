@@ -23,6 +23,13 @@ paths:
   investment_output: "output/investments/ParsedInvestments.xlsx"
   investment_rules: "rules/investments/InstrumentMaster.xlsx"
 
+  # Optional. Folder containing a hand-built Master Budget workbook, external
+  # to this repo, used as the read-only source of truth for the category
+  # taxonomy by sync_category_taxonomy.py. Leave unset if you don't have one -
+  # omitted entirely here (not an empty string) so it never deep-merges a
+  # real-looking path into your own settings.yaml.
+  # master_budget_folder: "/absolute/path/to/folder"
+
 budgeting:
   default_include: "YES"
 

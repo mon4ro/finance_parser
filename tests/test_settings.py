@@ -196,3 +196,36 @@ def test_example_settings_has_no_sparse_activity_accounts_leak_risk():
     )
 
     assert settings.get("budgeting", "sparse_activity_accounts", default=[]) == []
+
+
+def test_master_budget_folder_reads_configured_absolute_path(tmp_path):
+    settings_path = tmp_path / "settings.yaml"
+    settings_path.write_text(
+        'paths:\n  master_budget_folder: "/some/absolute/folder"\n',
+        encoding="utf-8",
+    )
+    settings = AppSettings.load(settings_path=settings_path, example_path=DEFAULT_EXAMPLE_SETTINGS_PATH)
+
+    assert settings.master_budget_folder() == Path("/some/absolute/folder")
+
+
+def test_master_budget_folder_defaults_to_none_when_unconfigured():
+    settings = AppSettings.load(
+        settings_path=Path("does-not-exist-user-settings.yaml"),
+        example_path=DEFAULT_EXAMPLE_SETTINGS_PATH,
+    )
+
+    assert settings.master_budget_folder() is None
+
+
+def test_example_settings_has_no_master_budget_folder_leak_risk():
+    """Same real incident class as portfolio_types/account_balance_seeds
+    above - the real folder path must stay absent from the example file
+    (commented out, not a live key), so it can never deep-merge into a
+    real settings.yaml that doesn't happen to override it."""
+    settings = AppSettings.load(
+        settings_path=Path("does-not-exist-user-settings.yaml"),
+        example_path=DEFAULT_EXAMPLE_SETTINGS_PATH,
+    )
+
+    assert settings.master_budget_folder() is None

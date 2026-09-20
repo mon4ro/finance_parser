@@ -123,6 +123,25 @@ class AppSettings:
             return path
         return self.project_root / path
 
+    def optional_path(self, key: str) -> Path | None:
+        raw = self.get("paths", key)
+        if raw is None:
+            return None
+
+        path = Path(str(raw)).expanduser()
+        if path.is_absolute():
+            return path
+        return self.project_root / path
+
+    def master_budget_folder(self) -> Path | None:
+        """
+        Folder containing the real, hand-built Master Budget workbook -
+        external to this repo, read-only source of truth for the category
+        taxonomy (see sync_category_taxonomy.py). Optional: not every
+        deployment has a Master Budget workbook to sync against.
+        """
+        return self.optional_path("master_budget_folder")
+
     def canonical_source_bank(self, source_bank: object) -> str:
         bank = _normalise_key(source_bank)
         aliases = self.get("budgeting", "source_bank_aliases", default={}) or {}
