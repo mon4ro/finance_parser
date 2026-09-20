@@ -82,16 +82,16 @@ def test_extract_taxonomy_handles_flat_supercategory_with_no_category_tier(tmp_p
 def test_build_taxonomy_rows_flags_ambiguous_subcategory():
     triples = [
         ("INCOME", "Bonuses", "Extra pay"),
-        ("EXPENSES", "Seed", "Tithe"),
-        ("INCOME", "Misc", "Tithe"),
+        ("EXPENSES", "Utilities", "Membership fee"),
+        ("INCOME", "Miscellaneous", "Membership fee"),
         ("EXPENSES", "Groceries", "Snacks"),
     ]
 
     rows = build_taxonomy_rows(triples)
 
     by_sub = {(r["Category"], r["Subcategory"]): r["Ambiguous"] for r in rows}
-    assert by_sub[("Seed", "Tithe")] == "YES"
-    assert by_sub[("Misc", "Tithe")] == "YES"
+    assert by_sub[("Utilities", "Membership fee")] == "YES"
+    assert by_sub[("Miscellaneous", "Membership fee")] == "YES"
     assert by_sub[("Groceries", "Snacks")] == "NO"
 
 
