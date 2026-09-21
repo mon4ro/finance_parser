@@ -8,6 +8,10 @@ from dataclasses import dataclass
 from datetime import datetime
 from pathlib import Path
 
+import pandas as pd
+
+from finance_parser.common import CHANGE_LOG_COLUMNS, CHANGE_LOG_SHEET
+
 
 PROJECT_ROOT = Path(__file__).resolve().parents[2]
 
@@ -104,7 +108,113 @@ def build_arg_parser() -> argparse.ArgumentParser:
         action="store_true",
         help="Skip the monthly account balance stage.",
     )
+    parser.add_argument(
+        "--show-changelog",
+        action="store_true",
+        help="Print the workbook's ChangeLog (what every pipeline stage did: rows read/added/"
+             "updated, status, details) and exit. Read-only - does not run the pipeline.",
+    )
+    parser.add_argument(
+        "--last",
+        type=int,
+        default=20,
+        help="With --show-changelog, how many of the most recent entries to show. Ignored if "
+             "--all is also given. Default: 20.",
+    )
+    parser.add_argument(
+        "--all",
+        dest="show_all_changelog",
+        action="store_true",
+        help="With --show-changelog, show every entry instead of just the last N.",
+    )
+    parser.add_argument(
+        "--script",
+        default=None,
+        help="With --show-changelog, only show entries from this Script value (exact match).",
+    )
     return parser
+
+
+def _clean_cell(value: object) -> str:
+    """
+    A blank Excel cell reads back via pandas as a NaN float, not an empty
+    string - str(nan) renders the literal text "nan", and "nan or ''" is
+    still truthy (only 0.0 is falsy for floats), so a naive `str(x or "")`
+    fallback never catches it. Real bug this fixed: both the ChangedAt
+    timestamp and the Details column rendered the literal word "nan"
+    instead of blank for the several ChangeLog rows that don't stamp them
+    (only the transaction_parser.py import stage does).
+    """
+    if value is None or pd.isna(value):
+        return ""
+    return str(value).strip()
+
+
+def print_changelog(
+    workbook: Path,
+    *,
+    last: int = 20,
+    show_all: bool = False,
+    script: str | None = None,
+) -> None:
+    """
+    Read-only summary of a budgeting workbook's ChangeLog sheet - one row
+    per pipeline-stage run (transaction_parser.py, transaction_normaliser.py,
+    transaction_categoriser.py, enrich_dividend_income.py, and any other
+    script that calls append_changelog_row()/append_change_log_entry()).
+
+    Shown in the sheet's own append order (oldest first) rather than
+    reversed, deliberately: several stages append a row with a blank
+    ChangedAt/ChangeID (only the transaction_parser.py import stage stamps
+    those) immediately after the real-timestamped row for the same run, so
+    natural order keeps "which run did this blank-timestamp row belong to"
+    visually obvious - reversing the list would separate them.
+    """
+    if not workbook.exists():
+        print(f"{workbook} does not exist - nothing to show.")
+        return
+
+    try:
+        df = pd.read_excel(workbook, sheet_name=CHANGE_LOG_SHEET, dtype=object)
+    except (ValueError, KeyError):
+        print(f"No {CHANGE_LOG_SHEET} sheet found in {workbook}.")
+        return
+
+    df.columns = [str(c).strip() for c in df.columns]
+    for col in CHANGE_LOG_COLUMNS:
+        if col not in df.columns:
+            df[col] = ""
+
+    if script:
+        df = df[df["Script"].astype(str) == script]
+
+    if df.empty:
+        print("No ChangeLog entries match.")
+        return
+
+    matching_count = len(df)
+    if not show_all:
+        df = df.tail(last)
+
+    print(f"ChangeLog for {workbook} ({len(df)} of {matching_count} matching entries shown):")
+    print("-" * 100)
+    for _, row in df.iterrows():
+        timestamp = _clean_cell(row["ChangedAt"]) or "(same run as above)"
+        rows_summary_parts = []
+        for label, col in (("before", "RowsBefore"), ("after", "RowsAfter"), ("added", "RowsAdded"), ("updated", "RowsUpdated"), ("removed", "RowsRemoved")):
+            value = _clean_cell(row.get(col))
+            if value:
+                rows_summary_parts.append(f"{label}={value}")
+        rows_summary = ", ".join(rows_summary_parts)
+
+        print(f"[{timestamp}] {_clean_cell(row['Script'])} - {_clean_cell(row['Action'])}")
+        if rows_summary:
+            print(f"    rows: {rows_summary}")
+        print(f"    status: {_clean_cell(row['Status'])}")
+        details = _clean_cell(row.get("Details"))
+        if details:
+            print(f"    details: {details}")
+        print()
 
 
 def timestamp_for_path() -> str:
@@ -318,6 +428,16 @@ def run_pipeline(args: argparse.Namespace) -> int:
 def main() -> None:
     parser = build_arg_parser()
     args = parser.parse_args()
+
+    if args.show_changelog:
+        print_changelog(
+            Path(args.workbook),
+            last=args.last,
+            show_all=args.show_all_changelog,
+            script=args.script,
+        )
+        return
+
     raise SystemExit(run_pipeline(args))
 
 
