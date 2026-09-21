@@ -263,14 +263,23 @@ def parse_date(value: object) -> pd.Timestamp | pd.NaT:
     if not text:
         return pd.NaT
 
-    # ISO date, optionally followed by a time-of-day/timezone suffix (e.g. a
-    # full ISO 8601 timestamp like "2026-02-07T11:17:44+02:00" from Coinmotion's
-    # export). Match only the leading yyyy-mm-dd and parse that explicitly -
-    # anything after it is ignored. Do this before generic pandas parsing to
-    # avoid day/month reversal: a full-fullmatch-only check here previously let
+    # ISO-ordered date (year first), optionally followed by a time-of-day/
+    # timezone suffix (e.g. a full ISO 8601 timestamp like
+    # "2026-02-07T11:17:44+02:00" from Coinmotion's export). Match only the
+    # leading yyyy-m-d/yyyy/m/d and parse that explicitly - anything after
+    # it is ignored. Do this before generic pandas parsing to avoid
+    # day/month reversal: a full-fullmatch-only check here previously let
     # timestamp strings fall through to dayfirst=True parsing below, which
     # misread "2026-02-07T11:17:44+02:00" as 2 July instead of 7 February.
-    iso_match = re.match(r"(\d{4})-(\d{1,2})-(\d{1,2})", text)
+    # Real bug, same root cause, found again later: a Nordea export started
+    # using "/" instead of "-" for this same year-first ordering
+    # ("2026/09/15") - since only "-" was matched here, those fell through
+    # to the same dayfirst=True fallback and got the same day/month swap
+    # (pandas itself warns about this: "Parsing dates in %Y/%m/%d format
+    # when dayfirst=True was specified"). Accepting either separator here
+    # closes the hole for both "-" and "/" year-first dates, from any
+    # source, not just Nordea.
+    iso_match = re.match(r"(\d{4})[-/](\d{1,2})[-/](\d{1,2})", text)
     if iso_match:
         year, month, day = iso_match.groups()
         parsed = pd.to_datetime(f"{year}-{month}-{day}", format="%Y-%m-%d", errors="coerce")
