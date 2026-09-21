@@ -97,22 +97,15 @@ UNIFIED_COLUMNS = [
     "ExportDate",
     "ImportedAt",
     "SourceFile",
-    # Appended, not inserted mid-list - see the same column-order lesson
-    # applied on the investment side (build_monthly_position_value.py).
-    # Real per-transaction running balance - only Nordea's raw export
-    # actually populates this (its own "Saldo" field); every other bank's
-    # parser leaves it blank. Was already part of RAW_COLUMNS and correctly
-    # populated there, but never carried through to UnifiedTransactions
-    # until build_monthly_account_balance.py needed it.
-    "Balance",
-    # Same reasoning as Balance above: already part of RAW_COLUMNS (a
-    # per-source raw type code, e.g. Norwegian's KATEVARAUS), but never
-    # carried through to UnifiedTransactions until a content-based rule
-    # needed to key off it directly (CashEntries.xlsx's optional Type column
-    # - SALE/PURCHASE/WITHDRAWAL/DEPOSIT - for Vinted-sourced rows; see
-    # cash.py) rather than relying on free-text Description matching.
-    "TransactionTypeRaw",
 ]
+# "Balance" and "TransactionTypeRaw" deliberately do NOT live here - removed
+# 2026-09-22 after confirming neither is read from UnifiedTransactions by
+# anything: build_monthly_account_balance.py's Balance use and its KATEVARAUS
+# TransactionTypeRaw filter both read from RawTransactions (via
+# load_raw_transactions() in account_balance_seed.py), which is where the
+# original comments' rationale actually applies. Both columns remain part of
+# RAW_COLUMNS, correctly populated there - do not re-add them here without a
+# real UnifiedTransactions-side consumer that needs them.
 
 IMPORT_LOG_COLUMNS = [
     "ImportRunID",
@@ -202,7 +195,32 @@ def normalise_reference_text(value: object) -> str:
     if isinstance(value, float):
         try:
             if value.is_integer():
-                return str(int(value))
+                reconstructed = int(value)
+                # float64 can only represent integers up to 2**53 exactly;
+                # beyond that, the digits pandas/openpyxl handed us here were
+                # ALREADY lossy by the time this function ever saw them - the
+                # precision was lost one layer down (Excel's own numeric-cell
+                # parsing), so no amount of reformatting here can recover the
+                # true original digits. Real incident this guards against:
+                # a real 20-digit Nordea reference number silently mangled
+                # this way in an .xlsx import went undetected for months,
+                # producing a real duplicated transaction that evaded
+                # RawID-based dedup because the corrupted vs. correct
+                # reference values hashed differently. Warn loudly instead of
+                # silently trusting a value that may be subtly wrong - so a
+                # human notices at import time, not months later via a
+                # duplicate. A CSV export never has this risk (every CSV
+                # cell is plain text, never auto-typed as a number).
+                if abs(reconstructed) > 2**53:
+                    print(
+                        f"WARNING: reference value {value!r} looks like a long integer "
+                        f"read from a numeric Excel cell (>{2**53} - beyond float64's exact "
+                        f"integer range). The digits may have been silently corrupted by Excel/"
+                        f"pandas before this code ever saw them - reconstructed as {reconstructed}, "
+                        f"which may not match the real reference. If this bank offers a CSV export "
+                        f"instead of .xlsx, prefer that - CSV cells are always read as plain text."
+                    )
+                return str(reconstructed)
         except (ValueError, OverflowError):
             pass
     return normalise_text(value)
@@ -662,8 +680,6 @@ def raw_to_unified_rows(raw_new: pd.DataFrame) -> pd.DataFrame:
             "ExportDate": row["ExportDate"],
             "ImportedAt": row["ImportedAt"],
             "SourceFile": row["SourceFile"],
-            "Balance": row.get("Balance", ""),
-            "TransactionTypeRaw": row.get("TransactionTypeRaw", ""),
         })
 
     return pd.DataFrame(rows, columns=UNIFIED_COLUMNS)

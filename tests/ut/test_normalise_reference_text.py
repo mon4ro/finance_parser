@@ -34,3 +34,25 @@ def test_non_integer_float_falls_back_to_normal_text_handling():
 
 def test_int_input_unaffected():
     assert normalise_reference_text(12345) == "12345"
+
+
+def test_reference_beyond_float64_exact_integer_range_warns_loudly(capsys):
+    """
+    Real incident: a real ~20-digit Nordea bank reference number, stored as
+    a numeric cell in an .xlsx export, was silently mangled by float64's
+    precision limit (exact only up to 2**53) before this code ever saw it -
+    undetected for months, until it produced a real duplicated transaction
+    that evaded RawID-based dedup (the corrupted vs. correct reference
+    values hashed differently). No code here can recover the true original
+    digits once Excel/pandas has already lost them - but it can at least
+    make the risk loud immediately, instead of silently trusting a value
+    that might be subtly wrong for months.
+    """
+    value = 1.4322006204699601e19  # matches the real incident's shape
+
+    result = normalise_reference_text(value)
+
+    out = capsys.readouterr().out
+    assert "WARNING" in out
+    assert "may have been silently corrupted" in out
+    assert result  # still returns something rather than raising, just warns

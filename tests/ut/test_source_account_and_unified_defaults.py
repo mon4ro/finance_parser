@@ -75,12 +75,18 @@ def test_raw_to_unified_leaves_normalized_receiver_blank():
     assert row["Include"] == "YES"
 
 
-def test_raw_to_unified_carries_balance_through(tmp_path):
+def test_raw_to_unified_does_not_carry_balance_or_transaction_type_raw_through():
     """
-    Real bug found and fixed: Balance (Nordea's real running balance, "Saldo"
-    in its raw export) was already part of RAW_COLUMNS and correctly
-    populated at the raw layer, but never carried through to
-    UnifiedTransactions at all - build_monthly_account_balance.py needs it.
+    Balance and TransactionTypeRaw were briefly carried through to
+    UnifiedTransactions (an earlier version of this test asserted exactly
+    that), but both turned out to have zero real consumers there:
+    build_monthly_account_balance.py's Balance use and its KATEVARAUS
+    TransactionTypeRaw filter both read from RawTransactions, not
+    UnifiedTransactions (see load_raw_transactions() in
+    account_balance_seed.py) - confirmed via a full grep before removing
+    them 2026-09-22. Both remain part of RAW_COLUMNS, correctly populated
+    there. This test guards against silently re-adding either without a
+    real UnifiedTransactions-side consumer that actually needs it.
     """
     raw = pd.DataFrame([{
         "RawID": "RAW-1",
@@ -114,51 +120,8 @@ def test_raw_to_unified_carries_balance_through(tmp_path):
 
     unified = raw_to_unified_rows(raw[RAW_COLUMNS])
 
-    assert unified.iloc[0]["Balance"] == 456.78
-
-
-def test_raw_to_unified_carries_transaction_type_raw_through(tmp_path):
-    """
-    Real bug found and fixed: TransactionTypeRaw was already part of
-    RAW_COLUMNS and correctly populated at the raw layer (e.g. Norwegian's
-    KATEVARAUS), but never carried through to UnifiedTransactions at all -
-    a content-based CategoryRules/TransactionRules row needed to key off it
-    directly (CashEntries.xlsx's optional Type column for Vinted-sourced
-    rows) rather than relying on free-text Description matching.
-    """
-    raw = pd.DataFrame([{
-        "RawID": "VINTED-1",
-        "SourceAccount": "CASH",
-        "SourceBank": "VINTED",
-        "BookingDate": "2026-06-01",
-        "ValueDate": "2026-06-01",
-        "Amount": 20.0,
-        "TransactionTypeRaw": "SALE",
-        "Description": "Test jacket",
-        "RawReceiver": "VINTED",
-        "ReceiverAccount": "",
-        "ReceiverBankBIC": "",
-        "Reference": "",
-        "Message": "",
-        "ArchiveID": "",
-        "Balance": "",
-        "CurrencyAmount": "",
-        "Currency": "EUR",
-        "Rate": 1,
-        "MerchantArea": "",
-        "MerchantCategory": "",
-        "ExportDate": "2026-06-01",
-        "ImportedAt": "2026-06-04 12:00:00",
-        "SourceFile": "CashEntries.xlsx",
-    }])
-
-    for col in RAW_COLUMNS:
-        if col not in raw.columns:
-            raw[col] = ""
-
-    unified = raw_to_unified_rows(raw[RAW_COLUMNS])
-
-    assert unified.iloc[0]["TransactionTypeRaw"] == "SALE"
+    assert "Balance" not in unified.columns
+    assert "TransactionTypeRaw" not in unified.columns
 
 
 def test_raw_to_unified_spankki_include_default_from_settings():
