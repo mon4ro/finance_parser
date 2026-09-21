@@ -4,7 +4,7 @@ from pathlib import Path
 import pandas as pd
 import pytest
 
-from investments.parsers import nordnet, seligson, evli, op_investment, coinmotion, nordea
+from finance_parser.investments.parsers import nordnet, seligson, evli, op_investment, coinmotion, nordea
 from finance_parser import settings as settings_module
 from finance_parser.investments.investment_common import INVESTMENT_IMPORT_LOG_SHEET
 from finance_parser.investments.investment_parser import append_to_output

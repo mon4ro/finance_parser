@@ -1,6 +1,6 @@
 import pandas as pd
 
-from parsers import op, norwegian, spankki
+from finance_parser.budgeting.parsers import op, norwegian, spankki
 
 
 def test_spankki_bank_raw_hash_ignores_source_file():

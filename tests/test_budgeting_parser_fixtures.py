@@ -1,6 +1,6 @@
 from pathlib import Path
 
-from parsers import op, norwegian, spankki
+from finance_parser.budgeting.parsers import op, norwegian, spankki
 
 
 FIXTURES = Path(__file__).resolve().parent / "fixtures" / "budgeting"
