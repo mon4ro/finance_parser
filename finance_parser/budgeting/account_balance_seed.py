@@ -165,7 +165,7 @@ def collect_account_balance_seed(
     into overrides["budgeting"]["account_balance_seeds"][account][date] if
     confirmed. Returns True if a seed was added.
 
-    Shared by seed_account_balance.py (the standalone, run-anytime tool) and
+    Shared by tools/seed_account_balance.py (the standalone, run-anytime tool) and
     setup_wizard.py's optional step - same prompts, same safety checks,
     either way.
     """

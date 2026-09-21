@@ -55,7 +55,7 @@ Step 6 builds a monthly end-of-month balance per budgeting account
 investment side's `MonthlyPositionValue.xlsx`, feeding a monthly net worth view.
 Nordea's own export already carries a real running balance, used directly for its
 accounts. Every other account needs a one-time "balance as of this date" seed first -
-run `python seed_account_balance.py`, or answer the setup wizard's optional prompt for
+run `python tools/seed_account_balance.py`, or answer the setup wizard's optional prompt for
 it. An account with no seed configured yet just produces no monthly rows for itself
 (reported clearly in the step's output, not silently guessed or dropped). Pass
 `--skip-account-balance` to disable step 6.

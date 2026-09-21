@@ -61,8 +61,8 @@ python setup_wizard.py --dry-run --keep-temp  # inspect the sandbox output after
 
 If you've already imported budgeting data, the wizard also offers to seed a starting
 account balance for any account that needs one (see "Budgeting workflow" below) - or
-run `python seed_account_balance.py` on its own at any time, including well after
-initial setup.
+run `python tools/seed_account_balance.py` on its own at any time, including well
+after initial setup.
 
 Or copy the example settings and edit the private local file by hand:
 
@@ -106,7 +106,7 @@ The full pipeline's last stage builds a monthly end-of-month balance per budgeti
 account (`output/budgeting/MonthlyAccountBalance.xlsx`) - budgeting's equivalent of the
 investment side's `MonthlyPositionValue.xlsx`. Nordea's own export already carries a
 real running balance, used directly; every other account needs a one-time "balance as
-of this date" seed first - run `python seed_account_balance.py` (or answer the setup
+of this date" seed first - run `python tools/seed_account_balance.py` (or answer the setup
 wizard's optional prompt for it). An account with no seed yet just produces no monthly
 rows, reported clearly rather than guessed. Pass `--skip-account-balance` to disable
 the stage.

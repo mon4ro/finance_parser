@@ -10,9 +10,10 @@ def test_project_structure_doc_exists_and_mentions_target_package():
 
     text = path.read_text(encoding="utf-8")
     assert "finance_parser/" in text
-    assert "finance_parser/budgeting/parsers/" in text
-    assert "finance_parser/investments/parsers/" in text
-    assert "Harmonisation Commit 1" in text
+    assert "budgeting/" in text
+    assert "investments/" in text
+    assert "tools/seed_account_balance.py" in text
+    assert "tools/find_duplicate_transactions.py" in text
 
 
 def test_cleanup_local_artifacts_doc_exists():

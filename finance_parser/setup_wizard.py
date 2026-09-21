@@ -574,7 +574,7 @@ def run_wizard(
                 "Some of your budgeting accounts don't have a running balance in their own "
                 "export - you can seed a starting balance now so monthly account balances can "
                 "be tracked (see build_monthly_account_balance.py). Skip this anytime and run "
-                "python seed_account_balance.py later instead."
+                "python tools/seed_account_balance.py later instead."
             )
             if ask_yes_no("Seed an account balance now?", default=False):
                 existing_app_settings = AppSettings(existing_settings)

@@ -322,7 +322,7 @@ def build_arg_parser() -> argparse.ArgumentParser:
         description="Build a monthly end-of-month balance per budgeting account - budgeting's "
                     "equivalent of the investment side's MonthlyPositionValue.xlsx. Nordea uses "
                     "its own real running balance; other accounts reconstruct from a manually "
-                    "seeded balance (see seed_account_balance.py) plus real transactions since."
+                    "seeded balance (see tools/seed_account_balance.py) plus real transactions since."
     )
     parser.add_argument("--budgeting-workbook", default=str(DEFAULT_BUDGETING_WORKBOOK))
     parser.add_argument("--output-workbook", default=str(DEFAULT_OUTPUT_WORKBOOK))
@@ -349,7 +349,7 @@ def main() -> None:
         print("Accounts with no balance seed configured yet (no monthly rows produced):")
         for account in stats["accounts_no_seed_configured"]:
             print(f"  - {account}")
-        print("Run python seed_account_balance.py to add one.")
+        print("Run python tools/seed_account_balance.py to add one.")
 
     if stats["accounts_raw_export_no_balance_data"]:
         print()

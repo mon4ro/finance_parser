@@ -63,14 +63,15 @@ finance_parser/
 │  │  └─ parsers/{nordnet,seligson,evli,op_investment,coinmotion,nordea}.py
 │  └─ utilities/                  # fresh_workbook_writer.py + maintenance scripts
 │
-├─ run_budgeting_pipeline.py      # thin root wrapper -> finance_parser.budgeting...
-├─ run_investment_pipeline.py     # thin root wrapper -> finance_parser.investments...
-├─ setup_wizard.py                # thin root wrapper
-├─ seed_account_balance.py        # thin root wrapper
-├─ find_duplicate_transactions.py # thin root wrapper
+├─ run_budgeting_pipeline.py      # thin root wrapper -> finance_parser.budgeting... (core, run often)
+├─ run_investment_pipeline.py     # thin root wrapper -> finance_parser.investments... (core, run often)
+├─ setup_wizard.py                # thin root wrapper (core - first-run onboarding)
 │
 ├─ personal/                      # gitignored - real-data-bearing personal scripts
-├─ tools/excel/                   # BudgetTools.xlsm + decompiled source
+├─ tools/
+│  ├─ excel/                      # BudgetTools.xlsm + decompiled source
+│  ├─ seed_account_balance.py     # thin wrapper (occasional/maintenance - run once per account)
+│  └─ find_duplicate_transactions.py  # thin wrapper (occasional/maintenance - spot-check tool)
 │
 ├─ tests/
 │  ├─ fixtures/
@@ -86,14 +87,21 @@ finance_parser/
    └─ patch_notes/                # gitignored - historical dev log, kept locally only
 ```
 
-## Root wrapper scripts
+## Root wrapper scripts vs. tools/
 
-`run_budgeting_pipeline.py`, `run_investment_pipeline.py`, `setup_wizard.py`,
-`seed_account_balance.py`, and `find_duplicate_transactions.py` are thin
-wrappers at the repo root (each just imports and calls `main()` from the
-real module under `finance_parser/`) - kept there deliberately for
-`python run_budgeting_pipeline.py`-style convenience, not leftover
-duplication.
+`run_budgeting_pipeline.py`, `run_investment_pipeline.py`, and
+`setup_wizard.py` are thin wrappers at the repo root (each just imports and
+calls `main()` from the real module under `finance_parser/`) - kept there
+deliberately for `python run_budgeting_pipeline.py`-style convenience.
+These are the core, frequently-run commands (the two pipelines, plus
+first-run onboarding).
+
+`tools/seed_account_balance.py` and `tools/find_duplicate_transactions.py`
+are the same kind of thin wrapper, but deliberately kept out of root -
+they're occasional/maintenance tools (seed an account once, spot-check
+duplicates now and then), not part of the everyday pipeline loop. Both
+still just call `main()` from the real module under `finance_parser/
+budgeting/` - moving them changed nothing about the underlying logic.
 
 **Individual pipeline *stage* scripts are deliberately NOT allowed at
 root** - `transaction_parser.py`, `transaction_normaliser.py`,
@@ -109,7 +117,8 @@ import from `finance_parser.budgeting.parsers` / `finance_parser.
 investments.parsers` directly. Also removed `RECOVERY_README.md` (an
 obsolete pre-package, pre-git ChatGPT-patch recovery doc) and a stale
 duplicate root `workflow.md` (superseded by the actively maintained
-`docs/workflow.md`).
+`docs/workflow.md`). Same day, moved `seed_account_balance.py` and
+`find_duplicate_transactions.py` from root into `tools/` (see above).
 
 ## Local-only, gitignored (not clutter - by design)
 
