@@ -239,6 +239,76 @@ def test_offer_template_copy_only_copies_missing_files(tmp_path, monkeypatch):
     assert investment_rules.read_bytes() == b"already exists"
 
 
+def test_print_settings_shows_merged_example_and_real_values(tmp_path, capsys):
+    settings_path = tmp_path / "settings.yaml"
+    settings_path.write_text(
+        yaml.safe_dump({"budgeting": {"sparse_activity_accounts": ["CHILD"]}}),
+        encoding="utf-8",
+    )
+
+    wizard.print_settings(settings_path=settings_path)
+
+    out = capsys.readouterr().out
+    assert "CHILD" in out
+    # A key only present in the example defaults (never overridden here)
+    # must still show up - this is the merged effective view, not just the
+    # real file's own raw content.
+    assert "default_currency" in out
+
+
+def test_print_seeds_lists_each_account_sorted_oldest_first(tmp_path, capsys):
+    settings_path = tmp_path / "settings.yaml"
+    settings_path.write_text(
+        yaml.safe_dump({
+            "budgeting": {
+                "account_balance_seeds": {
+                    "CHILD": {"2026-03-01": 100.0, "2026-01-01": 50.0},
+                    "OTHER": {"2026-02-01": 250.5},
+                },
+            },
+        }),
+        encoding="utf-8",
+    )
+
+    wizard.print_seeds(settings_path=settings_path)
+
+    out = capsys.readouterr().out
+    assert "CHILD:" in out
+    assert "OTHER:" in out
+    # Oldest-first within an account.
+    assert out.index("2026-01-01") < out.index("2026-03-01")
+
+
+def test_print_seeds_reports_when_none_configured(tmp_path, capsys):
+    settings_path = tmp_path / "settings.yaml"
+    settings_path.write_text(yaml.safe_dump({"budgeting": {"default_include": "YES"}}), encoding="utf-8")
+
+    wizard.print_seeds(settings_path=settings_path)
+
+    out = capsys.readouterr().out
+    assert "No account_balance_seeds configured" in out
+
+
+def test_show_settings_flag_exits_before_running_wizard(monkeypatch, capsys):
+    monkeypatch.setattr("sys.argv", ["setup_wizard.py", "--show-settings"])
+    monkeypatch.setattr(wizard, "run_wizard", lambda *a, **k: (_ for _ in ()).throw(AssertionError("wizard should not run")))
+
+    wizard.main()
+
+    out = capsys.readouterr().out
+    assert "Effective settings" in out
+
+
+def test_show_seeds_flag_exits_before_running_wizard(monkeypatch, capsys):
+    monkeypatch.setattr("sys.argv", ["setup_wizard.py", "--show-seeds"])
+    monkeypatch.setattr(wizard, "run_wizard", lambda *a, **k: (_ for _ in ()).throw(AssertionError("wizard should not run")))
+
+    wizard.main()
+
+    out = capsys.readouterr().out
+    assert "account balance seeds" in out or "No account_balance_seeds configured" in out
+
+
 def test_write_settings_merges_onto_existing_file_without_dropping_untouched_keys(tmp_path, monkeypatch):
     settings_path = tmp_path / "settings.yaml"
     settings_path.write_text(yaml.safe_dump({"budgeting": {"default_include": "YES"}}), encoding="utf-8")

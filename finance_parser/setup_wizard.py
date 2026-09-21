@@ -485,6 +485,43 @@ def write_settings(overrides: dict[str, Any], settings_path: Path = DEFAULT_SETT
     return True
 
 
+def print_settings(settings_path: Path = DEFAULT_SETTINGS_PATH) -> None:
+    """
+    Print the full effective settings (example defaults deep-merged with
+    your real config/settings.yaml, exactly as AppSettings.load() sees it
+    at runtime) as YAML. Read-only - never prompts, never writes anything.
+    """
+    settings = AppSettings.load(settings_path=settings_path)
+    print(f"Effective settings (example defaults + {settings_path}):")
+    print("-" * 60)
+    print(yaml.safe_dump(settings.data, sort_keys=False, allow_unicode=True).rstrip())
+    print("-" * 60)
+
+
+def print_seeds(settings_path: Path = DEFAULT_SETTINGS_PATH) -> None:
+    """
+    Print every configured budgeting.account_balance_seeds entry, one
+    account at a time, sorted oldest-first (reuses AppSettings.
+    account_balance_seeds() so formatting/sorting stays identical to what
+    build_monthly_account_balance.py actually uses). Read-only.
+    """
+    settings = AppSettings.load(settings_path=settings_path)
+    configured = settings.get("budgeting", "account_balance_seeds", default={}) or {}
+
+    if not configured:
+        print("No account_balance_seeds configured.")
+        return
+
+    print(f"Configured account balance seeds ({settings_path}):")
+    print("-" * 60)
+    for account in sorted(configured):
+        seeds = settings.account_balance_seeds(account)
+        print(f"{account}:")
+        for date_str, balance in seeds:
+            print(f"  {date_str}: {balance:,.2f}")
+    print("-" * 60)
+
+
 def run_wizard(
     *,
     settings_path: Path = DEFAULT_SETTINGS_PATH,
@@ -624,11 +661,31 @@ def build_arg_parser() -> argparse.ArgumentParser:
         help="With --dry-run, keep the temporary sandbox directory for inspection afterward instead "
              "of deleting it.",
     )
+    parser.add_argument(
+        "--show-settings",
+        action="store_true",
+        help="Print the full effective settings (example defaults merged with your real "
+             "config/settings.yaml) as YAML and exit. Read-only - does not run the wizard.",
+    )
+    parser.add_argument(
+        "--show-seeds",
+        action="store_true",
+        help="Print every configured budgeting.account_balance_seeds entry and exit. "
+             "Read-only - does not run the wizard.",
+    )
     return parser
 
 
 def main() -> None:
     args = build_arg_parser().parse_args()
+
+    if args.show_settings:
+        print_settings()
+        return
+
+    if args.show_seeds:
+        print_seeds()
+        return
 
     if args.keep_temp and not args.dry_run:
         raise ValueError("--keep-temp can only be used together with --dry-run")
