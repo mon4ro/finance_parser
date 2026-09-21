@@ -108,6 +108,9 @@ def append_changelog_row(
     status: str,
     details: str,
     backup_file: Path | None = None,
+    rows_before: int | None = None,
+    rows_after: int | None = None,
+    rows_removed: int | None = None,
 ) -> None:
     """
     Append ChangeLog as values before writing a fresh workbook.
@@ -138,6 +141,7 @@ def append_changelog_row(
 
     values = {
         "Timestamp": datetime.now().strftime("%Y-%m-%d %H:%M:%S"),
+        "ChangedAt": datetime.now().strftime("%Y-%m-%d %H:%M:%S"),
         "Script": script,
         "Action": action,
         "Sheet": sheet,
@@ -146,6 +150,12 @@ def append_changelog_row(
         "Status": status,
         "Details": details,
     }
+    if rows_before is not None:
+        values["RowsBefore"] = rows_before
+    if rows_after is not None:
+        values["RowsAfter"] = rows_after
+    if rows_removed is not None:
+        values["RowsRemoved"] = rows_removed
     rows.append([values.get(header, "") for header in headers])
 
 
