@@ -6,7 +6,7 @@ from typing import Any
 
 import pandas as pd
 
-from finance_parser.common import normalise_header, normalise_text
+from finance_parser.common import merge_tili_prefixed_source_account, normalise_header, normalise_text
 from finance_parser.utilities.interactive_prompts import ask, ask_yes_no
 
 
@@ -41,12 +41,27 @@ def load_raw_transactions(budgeting_workbook: Path) -> pd.DataFrame:
     Uses BookingDate (not ValueDate) as the real ledger date - the date a
     transaction actually posted, which is what an end-of-day balance
     snapshot reflects.
+
+    Applies merge_tili_prefixed_source_account() so a "TILI <name>"
+    SourceAccount value from before the filename-prefix fix in
+    infer_source_account_from_filename() merges back to "<name>" the
+    moment this is called - not only after the next full pipeline run.
+    Real bug this fixed: accounts_needing_seed() listed a real account
+    twice under two different SourceAccount values for exactly this
+    reason. Deliberately calls that narrow helper directly rather than
+    routing through sheet_to_dataframe()'s full migration chain - the
+    Nordea/S-Pankki migrations there force SourceAccount to the current
+    settings.yaml fixed_source_account value, which is real-settings-
+    dependent and broader than this account-listing context needs (and
+    was tried first - broke several tests that use synthetic Nordea rows
+    under settings-independent account names).
     """
     if not budgeting_workbook.exists():
         return pd.DataFrame(columns=["SourceAccount", "SourceBank", "BookingDate", "Amount", "Balance"])
 
     df = pd.read_excel(budgeting_workbook, sheet_name="RawTransactions", dtype=object, engine="openpyxl")
     df.columns = [normalise_header(c) for c in df.columns]
+    df = merge_tili_prefixed_source_account(df)
 
     df["SourceAccount"] = df["SourceAccount"].map(normalise_text)
     df["SourceBank"] = df["SourceBank"].map(normalise_text)

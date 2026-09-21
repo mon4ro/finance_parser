@@ -69,6 +69,28 @@ def test_accounts_needing_seed_keeps_account_mixing_nordea_with_another_bank(tmp
     assert accounts_needing_seed(path) == ["MIXED"]
 
 
+def test_accounts_needing_seed_merges_tili_prefixed_rows_into_the_real_account(tmp_path):
+    """
+    Real bug: rows imported before the "Tili" filename-prefix fix in
+    infer_source_account_from_filename() have "TILI <name>" permanently
+    baked into their own SourceAccount value - the code fix only changes
+    NEW imports, so a real account ended up listed twice (once as
+    "CHILD", once as "TILI CHILD") purely depending on when each row was
+    imported. load_raw_transactions() must merge them via
+    sheet_to_dataframe()'s migration before accounts_needing_seed() groups
+    by SourceAccount, so only one clean entry shows up.
+    """
+    path = tmp_path / "ParsedTransactions.xlsx"
+    _write_raw(path, [
+        {"RawID": "R-1", "SourceAccount": "CHILD", "SourceBank": "OP", "BookingDate": "2026-01-01", "Amount": -10},
+        {"RawID": "R-2", "SourceAccount": "TILI CHILD", "SourceBank": "OP", "BookingDate": "2025-06-01", "Amount": -5},
+    ])
+
+    accounts = accounts_needing_seed(path)
+
+    assert accounts == ["CHILD"]
+
+
 def test_accounts_needing_seed_empty_workbook_returns_empty(tmp_path):
     path = tmp_path / "does_not_exist.xlsx"
     assert accounts_needing_seed(path) == []

@@ -660,6 +660,39 @@ def raw_to_unified_rows(raw_new: pd.DataFrame) -> pd.DataFrame:
     return pd.DataFrame(rows, columns=UNIFIED_COLUMNS)
 
 
+def merge_tili_prefixed_source_account(df: pd.DataFrame) -> pd.DataFrame:
+    """
+    Rows imported before the "Tili" filename-prefix fix in
+    infer_source_account_from_filename() have "TILI <name>" permanently
+    baked into their own SourceAccount value - the code fix only changes
+    what NEW imports produce, it can't retroactively fix rows already
+    written. Real bug this caught: a real account split across two
+    different SourceAccount values ("CHILD" and "TILI CHILD") depending on
+    which side of the fix a given row was imported on, which silently broke
+    OwnershipRules matching and balance reconstruction for the older half
+    of that account's rows.
+
+    Deliberately narrow and self-contained (no settings.py dependency,
+    unlike the Nordea/S-Pankki migrations in sheet_to_dataframe()) so it's
+    safe to call directly on any DataFrame with a SourceAccount column,
+    not only through the full sheet_to_dataframe() migration chain - e.g.
+    account_balance_seed.py's load_raw_transactions() needs exactly this
+    fix without also pulling in the Nordea/S-Pankki "force SourceAccount to
+    the current fixed_source_account setting" behavior, which depends on
+    real (non-test-isolated) settings and has broader effects than this
+    account-listing context needs.
+    """
+    if "SourceAccount" not in df.columns:
+        return df
+
+    tili_mask = df["SourceAccount"].astype(str).str.upper().str.startswith("TILI ")
+    if tili_mask.any():
+        df.loc[tili_mask, "SourceAccount"] = (
+            df.loc[tili_mask, "SourceAccount"].astype(str).str.replace(r"(?i)^TILI\s+", "", regex=True).str.strip()
+        )
+    return df
+
+
 def sheet_to_dataframe(path: Path, sheet_name: str, columns: list[str]) -> pd.DataFrame:
     if not path.exists():
         return pd.DataFrame(columns=columns)
@@ -705,6 +738,8 @@ def sheet_to_dataframe(path: Path, sheet_name: str, columns: list[str]) -> pd.Da
             df.loc[spankki_mask, "SourceBank"] = "SPANKKI"
             if "SourceAccount" in df.columns:
                 df.loc[spankki_mask, "SourceAccount"] = "SPANKKI"
+
+    df = merge_tili_prefixed_source_account(df)
 
     if "Description" in df.columns and "Message" in df.columns and "SourceBank" in df.columns:
         nordea_mask = df.apply(lambda r: canonical_source_bank(r) == "NORDEA", axis=1)

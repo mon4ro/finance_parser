@@ -1,6 +1,6 @@
 from openpyxl import Workbook
 
-from finance_parser.common import IMPORT_LOG_COLUMNS, sheet_to_dataframe
+from finance_parser.common import IMPORT_LOG_COLUMNS, RAW_COLUMNS, sheet_to_dataframe
 
 
 def test_blank_source_bank_row_does_not_crash_and_stays_blank(tmp_path):
@@ -36,8 +36,6 @@ def test_blank_source_bank_row_infers_from_raw_id_prefix(tmp_path):
     (the original documented purpose of this migration path - an older
     output file predating the SourceBank column) should still be inferred.
     """
-    from finance_parser.common import RAW_COLUMNS
-
     path = tmp_path / "raw.xlsx"
     wb = Workbook()
     ws = wb.active
@@ -53,3 +51,51 @@ def test_blank_source_bank_row_infers_from_raw_id_prefix(tmp_path):
     df = sheet_to_dataframe(path, "RawTransactions", RAW_COLUMNS)
 
     assert df.iloc[0]["SourceBank"] == "OP"
+
+
+def test_tili_prefixed_source_account_self_heals_on_read(tmp_path):
+    """
+    Real bug: infer_source_account_from_filename() strips a generic "Tili"
+    filename prefix for NEW imports (see its own docstring), but that fix
+    can't retroactively touch rows already written before it existed - a
+    real account ended up split across two different SourceAccount values
+    ("CHILD" and "TILI CHILD") purely depending on when each row was
+    imported, silently breaking OwnershipRules matching and balance
+    reconstruction for the older half. sheet_to_dataframe() must merge
+    "TILI <name>" back to "<name>" on every read so both halves reunite.
+    """
+    path = tmp_path / "raw.xlsx"
+    wb = Workbook()
+    ws = wb.active
+    ws.title = "RawTransactions"
+    ws.append(RAW_COLUMNS)
+    row = {c: "" for c in RAW_COLUMNS}
+    row["RawID"] = "OP-abc123"
+    row["SourceAccount"] = "TILI CHILD"
+    row["SourceBank"] = "OP"
+    ws.append([row[c] for c in RAW_COLUMNS])
+    wb.save(path)
+
+    df = sheet_to_dataframe(path, "RawTransactions", RAW_COLUMNS)
+
+    assert df.iloc[0]["SourceAccount"] == "CHILD"
+
+
+def test_plain_source_account_untouched_by_tili_migration(tmp_path):
+    """A normal, already-correct SourceAccount must not be touched just
+    because it happens to start with the same letters ("TILING" etc.)."""
+    path = tmp_path / "raw.xlsx"
+    wb = Workbook()
+    ws = wb.active
+    ws.title = "RawTransactions"
+    ws.append(RAW_COLUMNS)
+    row = {c: "" for c in RAW_COLUMNS}
+    row["RawID"] = "OP-abc123"
+    row["SourceAccount"] = "CHILD"
+    row["SourceBank"] = "OP"
+    ws.append([row[c] for c in RAW_COLUMNS])
+    wb.save(path)
+
+    df = sheet_to_dataframe(path, "RawTransactions", RAW_COLUMNS)
+
+    assert df.iloc[0]["SourceAccount"] == "CHILD"
