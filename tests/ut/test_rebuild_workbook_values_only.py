@@ -10,7 +10,7 @@ from finance_parser.utilities.rebuild_workbook_values_only import (
 )
 
 
-PROJECT_ROOT = Path(__file__).resolve().parents[1]
+PROJECT_ROOT = Path(__file__).resolve().parents[2]
 
 
 def test_rebuild_workbook_values_only_roundtrip(tmp_path):

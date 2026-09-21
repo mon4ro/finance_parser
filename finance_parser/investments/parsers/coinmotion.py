@@ -24,7 +24,7 @@ BROKER_RAW_SHEET = "CoinmotionRawExport"
 # Coinmotion's "Transaction Statement" CSV export columns:
 # fromCurrency,toCurrency,type,eurAmount,cryptoAmount,rate,fee,feeCurrency,time
 #
-# Example rows (see tests/fixtures/investments/coinmotion_sample.csv):
+# Example rows (see tests/ut/fixtures/investments/coinmotion_sample.csv):
 #   EUR,EUR,deposit,1000.00,,0.00,0.00,EUR,2026-03-01T09:00:00+02:00
 #   EUR,BTC,market_trade,1000.00,0.02,49000.00,20.00,EUR,2026-03-01T09:05:00+02:00
 #

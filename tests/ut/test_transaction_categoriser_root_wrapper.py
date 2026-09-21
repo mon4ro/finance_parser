@@ -2,7 +2,7 @@ import importlib.util
 from pathlib import Path
 
 
-PROJECT_ROOT = Path(__file__).resolve().parents[1]
+PROJECT_ROOT = Path(__file__).resolve().parents[2]
 
 
 def test_legacy_budgeting_root_wrappers_are_removed():

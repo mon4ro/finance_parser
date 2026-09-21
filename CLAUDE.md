@@ -179,7 +179,7 @@ transcript with the user — never in a file about to be `git add`ed.
 **Watch for indirect leaks, not just literal typing:**
 - Copying a real value into a **test fixture** while writing a test for
   settings-driven behavior (happened once: a real name ended up in
-  `tests/test_investment_portfolio_owner.py` as a stand-in owner value).
+  `tests/ut/test_investment_portfolio_owner.py` as a stand-in owner value).
 - Pasting a **real observed value into an explanatory code comment** while
   documenting how a parser handles real data (happened once, in a parser's
   header comment — don't do this again).

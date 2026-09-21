@@ -3,7 +3,7 @@ from pathlib import Path
 from finance_parser.budgeting import transaction_parser
 
 
-PROJECT_ROOT = Path(__file__).resolve().parents[1]
+PROJECT_ROOT = Path(__file__).resolve().parents[2]
 PARSER = PROJECT_ROOT / "finance_parser" / "budgeting" / "transaction_parser.py"
 
 

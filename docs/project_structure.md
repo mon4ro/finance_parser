@@ -74,8 +74,10 @@ finance_parser/
 │  └─ find_duplicate_transactions.py  # thin wrapper (occasional/maintenance - spot-check tool)
 │
 ├─ tests/
-│  ├─ fixtures/
-│  └─ test_*.py
+│  ├─ README.md
+│  └─ ut/                          # unit tests - all of them today
+│     ├─ fixtures/
+│     └─ test_*.py
 │
 └─ docs/
    ├─ setup.md
@@ -107,7 +109,7 @@ budgeting/` - moving them changed nothing about the underlying logic.
 root** - `transaction_parser.py`, `transaction_normaliser.py`,
 `transaction_categoriser.py`, `common.py`, and `settings.py` must not exist
 at the repo root; run those via `python -m finance_parser.budgeting.<name>`
-instead. Enforced by `tests/test_no_root_compatibility_wrappers.py`.
+instead. Enforced by `tests/ut/test_no_root_compatibility_wrappers.py`.
 
 **2026-09-21 cleanup**: removed the old root-level `parsers/`, `investments/`,
 and `investment_parser.py` re-export shims (thin `from finance_parser...
@@ -118,7 +120,10 @@ investments.parsers` directly. Also removed `RECOVERY_README.md` (an
 obsolete pre-package, pre-git ChatGPT-patch recovery doc) and a stale
 duplicate root `workflow.md` (superseded by the actively maintained
 `docs/workflow.md`). Same day, moved `seed_account_balance.py` and
-`find_duplicate_transactions.py` from root into `tools/` (see above).
+`find_duplicate_transactions.py` from root into `tools/` (see above), and
+moved all 70 `tests/test_*.py` files plus `tests/fixtures/` into
+`tests/ut/` (see `tests/README.md`) - every test today is unit-test-shaped,
+so a `tests/sct/` sibling wasn't created ahead of actually needing one.
 
 ## Local-only, gitignored (not clutter - by design)
 
