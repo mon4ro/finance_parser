@@ -97,12 +97,22 @@ def parse_file(path: Path, imported_at: str) -> pd.DataFrame:
         amount = normalise_amount(row.get("NetDividendEUR", 0))
 
         parsed_row = {
-            # SourceAccount carries the real investment-side PortfolioOwner
-            # so this project's normal SourceAccount->Owner rules resolve it
-            # the same way they already do for every real bank account -
-            # this parser does not set Owner directly (see CLAUDE.md).
-            "SourceAccount": owner,
+            # SourceAccount is the real broker/account this dividend was
+            # paid into (NORDNET or EVLI) - a genuine account identity, not
+            # an inference. Owner is set directly from the real recorded
+            # PortfolioOwner fact, mirroring cash.py's own exception to the
+            # "parsers never set Owner" rule (see CLAUDE.md) - both are
+            # cases where the source data itself states whose transaction
+            # this is, not a guess derived from account naming. Previously
+            # SourceAccount carried PortfolioOwner instead (to borrow the
+            # SourceAccount->Owner inference machinery without violating
+            # that rule), but that made SourceAccount misleadingly look
+            # like a real bank account matching the budgeting side's own
+            # personal account names (each real household member's own
+            # account), when this money never touched a bank account at all.
+            "SourceAccount": broker,
             "SourceBank": SOURCE_BANK,
+            "Owner": owner,
             "ExportDate": export_date,
             "ImportedAt": imported_at,
             "BookingDate": trade_date,

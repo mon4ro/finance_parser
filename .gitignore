@@ -15,6 +15,7 @@ rules/investments/InstrumentMaster.xlsx
 
 # Timestamped backups made while editing rule workbooks
 rules/**/*_backup_*.xlsx
+rules/**/_backups/
 
 # Historical development log - kept locally, not published
 docs/patch_notes/

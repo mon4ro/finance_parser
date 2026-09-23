@@ -22,7 +22,22 @@ runs on the previous layer's *output*, never inline:
    `investment_dividends.py` aren't bank exports (a manually maintained
    ledger and a cross-pipeline read of the investment side's
    `DividendHistory.xlsx`, respectively) but follow the exact same contract
-   and flow through the exact same three layers.
+   and flow through the exact same three layers - **with one narrow,
+   deliberate exception each to the "never set `Owner`" rule**: `cash.py`
+   sets `Owner` directly from `CashEntries.xlsx`'s own `Owner` column, and
+   `investment_dividends.py` sets it directly from `DividendHistory.xlsx`'s
+   `PortfolioOwner`. Both are cases where the source data itself states
+   whose transaction this is as a real recorded fact, not an inference from
+   account naming - unlike every other parser, where `Owner` truly is
+   inferred (via `SourceAccount` and `SOURCE_TO_DEFAULT_OWNER`) rather than
+   a fact present in the source file. `investment_dividends.py`'s
+   `SourceAccount` is the real broker the dividend was paid into (`NORDNET`
+   or `EVLI`) - it used to carry `PortfolioOwner` instead, as a workaround
+   to borrow the `SourceAccount`->`Owner` inference machinery without
+   setting `Owner` directly, but that made it look like a real bank account
+   matching the budgeting side's own personal account names (each real
+   household member's own account), when this money never touched a bank
+   account at all (fixed 2026-09-23).
 
 2. **Unified (normalised)** — `raw_to_unified_rows()` in
    `finance_parser/common.py`, invoked by `transaction_parser.py`.
