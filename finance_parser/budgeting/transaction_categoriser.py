@@ -486,6 +486,246 @@ def update_row_with_rules(
     )
 
 
+def target_fields_for_rule(rule: Rule, *, category_rule: bool) -> set[str]:
+    """
+    Which UnifiedTransactions field(s) a single rule's own populated Set*
+    columns touch - used by --run-rule to know what to recompute.
+    """
+    set_fields = CATEGORY_SET_FIELDS if category_rule else OWNERSHIP_SET_FIELDS
+    return {target for col, target in set_fields.items() if not is_blank(rule.raw.get(col))}
+
+
+def find_rule_by_id(
+    rule_id: str,
+    category_rules: list[Rule],
+    ownership_rules: list[Rule],
+    *,
+    rules_path: Path,
+) -> tuple[Rule, bool]:
+    """
+    Returns (rule, is_category_rule). category_rules/ownership_rules are
+    already Enabled-only (see load_rules) - if not found there, re-check the
+    raw sheets (regardless of Enabled) so a disabled rule gets a clear,
+    specific error instead of a bare "not found".
+    """
+    for rule in category_rules:
+        if rule.rule_id == rule_id:
+            return rule, True
+    for rule in ownership_rules:
+        if rule.rule_id == rule_id:
+            return rule, False
+
+    if rule_id.upper().startswith("BR"):
+        raise ValueError(
+            f"Rule {rule_id!r} looks like a TransactionRules (normaliser) rule - "
+            "use `transaction_normaliser.py --run-rule` instead, not the categoriser."
+        )
+
+    for sheet_name in (CATEGORY_RULES_SHEET, OWNERSHIP_RULES_SHEET):
+        try:
+            df = pd.read_excel(rules_path, sheet_name=sheet_name, dtype=object, engine="openpyxl")
+        except ValueError:
+            continue
+        df.columns = [normalise_header(c) for c in df.columns]
+        if "RuleID" in df.columns and (df["RuleID"].astype(str).str.strip() == rule_id).any():
+            raise ValueError(f"Rule {rule_id!r} exists in {sheet_name} but is disabled (Enabled != YES) - enable it first.")
+
+    raise ValueError(f"Rule {rule_id!r} not found in CategoryRules or OwnershipRules.")
+
+
+def simulate_rule_recompute(
+    original_row: dict[str, Any],
+    *,
+    target_fields: set[str],
+    excel_row: int,
+    headers: dict[str, int],
+    comment_column: str,
+    category_rules: list[Rule],
+    ownership_rules: list[Rule],
+) -> dict[str, tuple[Any, Any]] | None:
+    """
+    Recompute target_fields as if they started blank, by running them back
+    through the existing full-priority rule chain (update_row_with_rules) -
+    this correctly respects a higher-priority rule targeting the same
+    field (it would win the simulation too), correctly fills a genuinely
+    blank field, and correctly corrects a stale non-blank value the exact
+    same way. Returns only the fields whose recomputed value actually
+    differs from the row's real current value (and is non-blank - never
+    proposes clearing a field to blank), or None if nothing would change.
+
+    Rows with non-blank Review/Notes are protected for free here:
+    update_row_with_rules() checks the real (unmodified) Review/Notes value
+    on the row copy passed in and refuses to touch anything if it's set.
+    """
+    simulated_input = dict(original_row)
+    for field in target_fields:
+        simulated_input[field] = ""
+
+    scratch_stats = CategoriseStats()
+    updated_row, _ = update_row_with_rules(
+        simulated_input,
+        excel_row=excel_row,
+        headers=headers,
+        comment_column=comment_column,
+        category_rules=category_rules,
+        ownership_rules=ownership_rules,
+        recategorise_scope=None,
+        stats=scratch_stats,
+    )
+    computed = updated_row if updated_row is not None else simulated_input
+
+    changes: dict[str, tuple[Any, Any]] = {}
+    for field in target_fields:
+        old_value = original_row.get(field)
+        new_value = computed.get(field)
+        if is_blank(new_value):
+            continue
+        if display_blank(old_value) != display_blank(new_value):
+            changes[field] = (display_blank(old_value), display_blank(new_value))
+
+    return changes or None
+
+
+def prompt_for_row_selection(changes: list[RowChange]) -> set[str]:
+    choice = input("Apply [a]ll / [s]elect rows / [n]one: ").strip().lower()
+    if choice == "a":
+        return {c.unified_id for c in changes}
+    if choice == "s":
+        raw = input("Comma-separated UnifiedIDs to apply: ").strip()
+        return {v.strip() for v in raw.split(",") if v.strip()}
+    return set()
+
+
+def run_rule_workbook(
+    workbook_path: Path,
+    rules_path: Path,
+    rule_id: str,
+    *,
+    apply_all: bool,
+    apply_rows: list[str] | None,
+    dry_run: bool,
+) -> list[RowChange]:
+    """
+    Narrowly re-apply ONE rule's effect to the rows it matches - including
+    correcting a stale non-blank value, which a normal categoriser run
+    cannot do (every rule here defaults to BLANK_ONLY). See
+    simulate_rule_recompute() for how this stays safe: it recomputes via
+    the same full priority-ordered rule chain, it never force-overwrites
+    the whole workbook, and it never touches a manually-reviewed row.
+    """
+    if not workbook_path.exists():
+        raise FileNotFoundError(f"Parsed transactions workbook not found: {workbook_path}")
+
+    category_rules = load_rules(rules_path, CATEGORY_RULES_SHEET)
+    ownership_rules = load_rules(rules_path, OWNERSHIP_RULES_SHEET)
+
+    target_rule, is_category_rule = find_rule_by_id(rule_id, category_rules, ownership_rules, rules_path=rules_path)
+    target_fields = target_fields_for_rule(target_rule, category_rule=is_category_rule)
+    if not target_fields:
+        raise ValueError(f"Rule {rule_id!r} does not set any recognised field - nothing to recompute.")
+
+    print(f"Read previous workbook values only: {workbook_path}")
+    sheets = read_workbook_values_only(workbook_path)
+    if UNIFIED_SHEET not in sheets:
+        raise ValueError(f"Workbook does not contain required sheet: {UNIFIED_SHEET}")
+
+    headers_list, records = sheet_values_to_records(sheets[UNIFIED_SHEET])
+    headers = {header: idx + 1 for idx, header in enumerate(headers_list) if header}
+    comment_column = find_comment_column(list(headers.keys()))
+
+    changes: list[RowChange] = []
+    for record_idx, original_row in enumerate(records, start=2):
+        if not rule_matches(target_rule, original_row, category_rule=is_category_rule):
+            continue
+
+        field_changes = simulate_rule_recompute(
+            original_row,
+            target_fields=target_fields,
+            excel_row=record_idx,
+            headers=headers,
+            comment_column=comment_column,
+            category_rules=category_rules,
+            ownership_rules=ownership_rules,
+        )
+        if field_changes:
+            changes.append(RowChange(
+                excel_row=record_idx,
+                unified_id=as_text(original_row.get("UnifiedID")),
+                raw_receiver=as_text(original_row.get("RawReceiver")),
+                normalized_receiver=as_text(original_row.get("NormalizedReceiver")),
+                rule_ids=[rule_id],
+                changes=field_changes,
+            ))
+
+    sheet_name = CATEGORY_RULES_SHEET if is_category_rule else OWNERSHIP_RULES_SHEET
+    print(f"Rule {rule_id!r} ({sheet_name}) targets field(s): {', '.join(sorted(target_fields))}")
+    print(f"Rows checked: {len(records)}")
+    print_changes(changes, max_rows=0)
+
+    if not changes:
+        print("No changes proposed.")
+        return []
+
+    if dry_run:
+        print()
+        print("Dry run only: workbook was not modified.")
+        return changes
+
+    if apply_rows is not None:
+        rows_to_apply = set(apply_rows)
+    elif apply_all:
+        rows_to_apply = {c.unified_id for c in changes}
+    else:
+        rows_to_apply = prompt_for_row_selection(changes)
+
+    if not rows_to_apply:
+        print("Nothing selected to apply - aborted.")
+        return []
+
+    selected_changes = [c for c in changes if c.unified_id in rows_to_apply]
+    unmatched = rows_to_apply - {c.unified_id for c in changes}
+    if unmatched:
+        print(f"WARNING: these selected UnifiedIDs did not match any proposed change and were ignored: {sorted(unmatched)}")
+
+    if not selected_changes:
+        print("Nothing selected to apply - aborted.")
+        return []
+
+    for change in selected_changes:
+        record = records[change.excel_row - 2]
+        for field, (_, new_value) in change.changes.items():
+            record[field] = new_value
+
+    sheets[UNIFIED_SHEET] = records_to_sheet_values(headers_list, records)
+    append_changelog_row(
+        sheets,
+        script=SCRIPT_NAME,
+        action=f"--run-rule {rule_id}",
+        sheet=UNIFIED_SHEET,
+        rows_updated=len(selected_changes),
+        status="Completed",
+        details=(
+            f"Narrow re-application of rule {rule_id} ({sheet_name}), targeting "
+            f"field(s) {', '.join(sorted(target_fields))}. {len(changes)} row(s) "
+            f"proposed, {len(selected_changes)} applied."
+        ),
+        backup_file=None,
+    )
+
+    backup_path, _, writer_stats = replace_with_fresh_workbook(
+        workbook_path,
+        sheets,
+        backup_label=f"before_run_rule_{rule_id}",
+        basic_formatting=True,
+        excel_tables=False,
+    )
+    print(f"Backed up old workbook: {backup_path}")
+    print(f"Sheets written: {writer_stats['sheets_written']}")
+    print(f"Applied {len(selected_changes)} row(s).")
+
+    return selected_changes
+
+
 def categorise_workbook_fresh_rebuild(
     workbook_path: Path,
     rules_path: Path,
@@ -732,12 +972,47 @@ def build_arg_parser() -> argparse.ArgumentParser:
         ),
     )
     parser.add_argument("--max-print", type=int, default=50, help="Maximum changed rows to print. Use 0 to print all. Default: 50.")
+    parser.add_argument(
+        "--run-rule",
+        metavar="RULEID",
+        default=None,
+        help=(
+            "Narrowly re-apply one CategoryRules/OwnershipRules rule (by RuleID, e.g. CR0267) to the "
+            "rows it matches - including correcting a stale non-blank value a normal run would skip. "
+            "Always prints a full report first; combine with --dry-run, --apply, or --apply-rows to "
+            "control whether/what gets written. Mutually exclusive with --recategorise."
+        ),
+    )
+    parser.add_argument("--apply", action="store_true", help="With --run-rule: apply all proposed changes without prompting.")
+    parser.add_argument(
+        "--apply-rows",
+        metavar="UNIFIEDID1,UNIFIEDID2,...",
+        default=None,
+        help="With --run-rule: comma-separated UnifiedIDs to apply (skips the prompt, applies only these).",
+    )
     return parser
 
 
 def main() -> None:
     parser = build_arg_parser()
     args = parser.parse_args()
+
+    if args.run_rule:
+        if args.recategorise:
+            parser.error("--run-rule cannot be combined with --recategorise")
+        apply_rows = [v.strip() for v in args.apply_rows.split(",") if v.strip()] if args.apply_rows else None
+        run_rule_workbook(
+            args.workbook,
+            args.rules,
+            args.run_rule,
+            apply_all=args.apply,
+            apply_rows=apply_rows,
+            dry_run=args.dry_run,
+        )
+        return
+
+    if args.apply or args.apply_rows:
+        parser.error("--apply and --apply-rows only apply together with --run-rule")
 
     if (args.all or args.only_automatic) and not args.recategorise:
         parser.error("--all and --only-automatic can only be used together with --recategorise")

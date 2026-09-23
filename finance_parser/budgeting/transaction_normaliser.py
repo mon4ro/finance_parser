@@ -392,6 +392,207 @@ def apply_rules(unified: pd.DataFrame, rules: list[Rule]) -> tuple[pd.DataFrame,
     return out, stats
 
 
+def find_rule_by_id(rule_id: str, rules: list[Rule], *, path: Path) -> Rule:
+    """
+    rules is already Enabled-only (see load_rules) - if not found there,
+    re-check the raw sheet (regardless of Enabled) so a disabled rule gets
+    a clear, specific error instead of a bare "not found".
+    """
+    for rule in rules:
+        if rule.rule_id == rule_id:
+            return rule
+
+    if rule_id.upper().startswith(("CR", "OR")):
+        raise ValueError(
+            f"Rule {rule_id!r} looks like a CategoryRules/OwnershipRules rule - "
+            "use `transaction_categoriser.py --run-rule` instead, not the normaliser."
+        )
+
+    df = pd.read_excel(path, sheet_name=RULES_SHEET, dtype=object, engine="openpyxl")
+    df.columns = [text(c) for c in df.columns]
+    if "RuleID" in df.columns and (df["RuleID"].astype(str).str.strip() == rule_id).any():
+        raise ValueError(f"Rule {rule_id!r} exists in {RULES_SHEET} but is disabled (Enabled != YES) - enable it first.")
+
+    raise ValueError(f"Rule {rule_id!r} not found in {RULES_SHEET}.")
+
+
+def row_matches_rule(rule: Rule, row: pd.Series) -> bool:
+    if rule.field_to_search not in row.index:
+        return False
+    if not rule_matches(rule, row.get(rule.field_to_search, "")):
+        return False
+    return condition_matches(rule, row)
+
+
+def run_single_rule(
+    unified: pd.DataFrame,
+    all_rules: list[Rule],
+    rule_id: str,
+    *,
+    path: Path,
+) -> tuple[pd.DataFrame, list[dict[str, object]]]:
+    """
+    Narrowly re-apply ONE rule's effect to the rows it matches - including
+    correcting a stale non-blank value, which a normal normaliser run
+    cannot do (every rule here defaults to BLANK_ONLY). Recomputes by
+    blanking the target rule's own Set* fields on just the matching rows,
+    then running the *existing*, unmodified apply_rules() (full
+    priority-ordered chain across all rules, not just this one) so a
+    higher-priority rule targeting the same field still correctly wins.
+    Only the rows whose recomputed value actually differs from what's
+    there now are proposed as changes.
+
+    Note: unlike the categoriser, this engine has no Review/Notes-style
+    manual-override gate (see apply_rules() - it only skips split rows) -
+    a manually-corrected NormalizedReceiver/Include on a row matching the
+    target rule is not otherwise protected here, consistent with how a
+    normal normaliser run already behaves for split rows only.
+    """
+    target_rule = find_rule_by_id(rule_id, all_rules, path=path)
+    target_fields = set(target_rule.set_values.keys())
+    if not target_fields:
+        raise ValueError(f"Rule {rule_id!r} does not set any field - nothing to recompute.")
+
+    match_mask = unified.apply(lambda row: row_matches_rule(target_rule, row), axis=1)
+    matched_idx = unified.index[match_mask]
+
+    simulated = unified.copy()
+    for field in target_fields:
+        if field in simulated.columns:
+            simulated.loc[matched_idx, field] = ""
+
+    updated, _ = apply_rules(simulated, all_rules)
+
+    proposed: list[dict[str, object]] = []
+    for idx in matched_idx:
+        row_changes: dict[str, tuple[object, object]] = {}
+        for field in target_fields:
+            if field not in unified.columns:
+                continue
+            old_value = unified.at[idx, field]
+            new_value = updated.at[idx, field]
+            if is_blank(new_value):
+                continue
+            if text(old_value) != text(new_value):
+                row_changes[field] = (text(old_value), text(new_value))
+
+        if row_changes:
+            proposed.append({
+                "index": idx,
+                "unified_id": text(unified.at[idx, "UnifiedID"]) if "UnifiedID" in unified.columns else "",
+                "raw_receiver": text(unified.at[idx, "RawReceiver"]) if "RawReceiver" in unified.columns else "",
+                "changes": row_changes,
+            })
+
+    return updated, proposed
+
+
+def print_run_rule_report(rule_id: str, target_fields: set[str], proposed: list[dict[str, object]], rows_checked: int) -> None:
+    print(f"Rule {rule_id!r} targets field(s): {', '.join(sorted(target_fields))}")
+    print(f"Rows checked: {rows_checked}")
+    if not proposed:
+        print("No changes proposed.")
+        return
+    print(f"Changed rows: {len(proposed)}")
+    for item in proposed:
+        fields = ", ".join(f"{f}: {old!r} -> {new!r}" for f, (old, new) in item["changes"].items())
+        print(f"  UnifiedID={item['unified_id']!r} RawReceiver={item['raw_receiver']!r} {fields}")
+
+
+def prompt_for_row_selection(proposed: list[dict[str, object]]) -> set[str]:
+    choice = input("Apply [a]ll / [s]elect rows / [n]one: ").strip().lower()
+    if choice == "a":
+        return {item["unified_id"] for item in proposed}
+    if choice == "s":
+        raw = input("Comma-separated UnifiedIDs to apply: ").strip()
+        return {v.strip() for v in raw.split(",") if v.strip()}
+    return set()
+
+
+def run_rule_command(
+    workbook_path: Path,
+    rules_path: Path,
+    rule_id: str,
+    *,
+    apply_all: bool,
+    apply_rows: list[str] | None,
+    dry_run: bool,
+) -> None:
+    rules = load_rules(rules_path)
+    target_rule = find_rule_by_id(rule_id, rules, path=rules_path)
+    target_fields = set(target_rule.set_values.keys())
+
+    print(f"Read previous workbook values only: {workbook_path}")
+    sheets, unified = load_unified_from_workbook_values(workbook_path)
+    print(f"Loaded sheets: {len(sheets)}")
+
+    updated, proposed = run_single_rule(unified, rules, rule_id, path=rules_path)
+    print_run_rule_report(rule_id, target_fields, proposed, rows_checked=len(unified))
+
+    if not proposed:
+        return
+
+    if dry_run:
+        print()
+        print("Dry run only: workbook was not modified.")
+        return
+
+    if apply_rows is not None:
+        rows_to_apply = set(apply_rows)
+    elif apply_all:
+        rows_to_apply = {item["unified_id"] for item in proposed}
+    else:
+        rows_to_apply = prompt_for_row_selection(proposed)
+
+    if not rows_to_apply:
+        print("Nothing selected to apply - aborted.")
+        return
+
+    selected = [item for item in proposed if item["unified_id"] in rows_to_apply]
+    unmatched = rows_to_apply - {item["unified_id"] for item in proposed}
+    if unmatched:
+        print(f"WARNING: these selected UnifiedIDs did not match any proposed change and were ignored: {sorted(unmatched)}")
+
+    if not selected:
+        print("Nothing selected to apply - aborted.")
+        return
+
+    final = unified.copy()
+    for item in selected:
+        for field, (_, new_value) in item["changes"].items():
+            final.at[item["index"], field] = new_value
+
+    headers = [str(col) for col in final.columns]
+    records = dataframe_to_records(final)
+    sheets[UNIFIED_SHEET] = records_to_sheet_values(headers, records)
+
+    append_changelog_row(
+        sheets,
+        script=SCRIPT_NAME,
+        action=f"--run-rule {rule_id}",
+        sheet=UNIFIED_SHEET,
+        rows_updated=len(selected),
+        status="Completed",
+        details=(
+            f"Narrow re-application of rule {rule_id} ({RULES_SHEET}), targeting "
+            f"field(s) {', '.join(sorted(target_fields))}. {len(proposed)} row(s) "
+            f"proposed, {len(selected)} applied."
+        ),
+        backup_file=None,
+    )
+
+    backup_path, _, writer_stats = replace_with_fresh_workbook(
+        workbook_path,
+        sheets,
+        backup_label=f"before_run_rule_{rule_id}",
+        basic_formatting=True,
+        excel_tables=False,
+    )
+    print(f"Backed up old workbook: {backup_path}")
+    print(f"Sheets written: {writer_stats['sheets_written']}")
+    print(f"Applied {len(selected)} row(s).")
+
+
 def load_unified_from_workbook_values(workbook_path: Path) -> tuple[dict[str, list[list[object]]], pd.DataFrame]:
     """Read workbook values only and return all sheets plus UnifiedTransactions."""
     sheets = read_workbook_values_only(workbook_path)
@@ -498,6 +699,24 @@ def main() -> None:
         action="store_true",
         help="Show what would be changed, but do not write the workbook.",
     )
+    parser.add_argument(
+        "--run-rule",
+        metavar="RULEID",
+        default=None,
+        help=(
+            "Narrowly re-apply one TransactionRules rule (by RuleID, e.g. BR0290) to the rows it "
+            "matches - including correcting a stale non-blank value a normal run would skip. Always "
+            "prints a full report first; combine with --dry-run, --apply, or --apply-rows to control "
+            "whether/what gets written."
+        ),
+    )
+    parser.add_argument("--apply", action="store_true", help="With --run-rule: apply all proposed changes without prompting.")
+    parser.add_argument(
+        "--apply-rows",
+        metavar="UNIFIEDID1,UNIFIEDID2,...",
+        default=None,
+        help="With --run-rule: comma-separated UnifiedIDs to apply (skips the prompt, applies only these).",
+    )
 
     args = parser.parse_args()
 
@@ -506,6 +725,21 @@ def main() -> None:
 
     if not workbook_path.exists():
         raise FileNotFoundError(f"Parsed transactions workbook not found: {workbook_path}")
+
+    if args.run_rule:
+        apply_rows = [v.strip() for v in args.apply_rows.split(",") if v.strip()] if args.apply_rows else None
+        run_rule_command(
+            workbook_path,
+            rules_path,
+            args.run_rule,
+            apply_all=args.apply,
+            apply_rows=apply_rows,
+            dry_run=args.dry_run,
+        )
+        return
+
+    if args.apply or args.apply_rows:
+        parser.error("--apply and --apply-rows only apply together with --run-rule")
 
     rules = load_rules(rules_path)
     print(f"Read previous workbook values only: {workbook_path}")
