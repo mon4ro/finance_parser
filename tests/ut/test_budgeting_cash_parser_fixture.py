@@ -25,20 +25,21 @@ def test_cash_fixture_parses_expected_fields():
     assert row["ExportDate"] == "2026-01-20"
     assert row["RawID"].startswith("CASH-")
 
-    # "Source" (whose cash) is deliberately not part of the canonical raw
-    # schema - it must not leak into RawTransactions/UnifiedTransactions.
-    assert "Source" not in df.columns
+    # Owner (renamed from "Source" 2026-09-23) DOES flow into the canonical
+    # raw schema now, unlike most other CashEntries-only metadata - it's a
+    # real per-row fact the person entering the row already states, not
+    # something that needs inferring.
+    assert row["Owner"] == "PERSONAL"
 
 
-def test_cash_fixture_raw_export_preserves_source_column():
+def test_cash_fixture_raw_export_preserves_owner_column():
     path = FIXTURES / "cash_sample.xlsx"
     raw = cash.parse_bank_raw_rows(path, "2026-09-13 12:00:00")
     row = raw.iloc[0]
 
     assert row["BankRawExportID"].startswith("CASHRAW-")
     assert row["SourceBank"] == "CASH"
-    # Unlike RawTransactions, the raw-export sheet keeps "Source" for audit.
-    assert row["Source"] == "PERSONAL"
+    assert row["Owner"] == "PERSONAL"
     assert row["EntryID"] == "CASH-0001"
 
 
@@ -55,7 +56,7 @@ def test_cash_parses_native_excel_date_cells(tmp_path):
     wb = Workbook()
     ws = wb.active
     ws.title = "CashEntries"
-    ws.append(["EntryID", "Date", "Source", "Amount", "Currency", "Description", "RawReceiver", "ExportDate"])
+    ws.append(["EntryID", "Date", "Owner", "Amount", "Currency", "Description", "RawReceiver", "ExportDate"])
     ws.append(["CASH-0004", date(2026, 5, 10), "PERSONAL", -3, "EUR", "Kioski snack", "Kioski", date(2026, 9, 13)])
     wb.save(path)
 
@@ -82,7 +83,7 @@ def test_bank_raw_export_id_stable_across_date_cell_type(tmp_path):
     wb = Workbook()
     ws = wb.active
     ws.title = "CashEntries"
-    ws.append(["EntryID", "Date", "Source", "Amount", "Currency", "Description", "RawReceiver", "ExportDate"])
+    ws.append(["EntryID", "Date", "Owner", "Amount", "Currency", "Description", "RawReceiver", "ExportDate"])
     ws.append(["CASH-0001", "2026-05-09", "PERSONAL", -5, "EUR", "Test item", "Yksityishenkilö", "2026-09-13"])
     wb.save(text_path)
 
@@ -90,7 +91,7 @@ def test_bank_raw_export_id_stable_across_date_cell_type(tmp_path):
     wb = Workbook()
     ws = wb.active
     ws.title = "CashEntries"
-    ws.append(["EntryID", "Date", "Source", "Amount", "Currency", "Description", "RawReceiver", "ExportDate"])
+    ws.append(["EntryID", "Date", "Owner", "Amount", "Currency", "Description", "RawReceiver", "ExportDate"])
     ws.append(["CASH-0001", date(2026, 5, 9), "PERSONAL", -5, "EUR", "Test item", "Yksityishenkilö", date(2026, 9, 13)])
     wb.save(native_path)
 
@@ -107,16 +108,15 @@ def test_vinted_prefixed_entry_id_gets_vinted_source_bank_and_raw_id(tmp_path):
     wb = Workbook()
     ws = wb.active
     ws.title = "CashEntries"
-    ws.append(["EntryID", "Date", "Source", "Amount", "Currency", "Description", "RawReceiver", "ExportDate"])
+    ws.append(["EntryID", "Date", "Owner", "Amount", "Currency", "Description", "RawReceiver", "ExportDate"])
     ws.append(["CASH-0001", "2026-05-09", "PERSON_A", -5, "EUR", "Kioski snack", "Kioski", "2026-09-13"])
     ws.append(["VINTED-0001", "2026-03-12", "PERSON_B", 20, "EUR", "Vinted sale: Test jacket", "VINTED", "2026-09-20"])
     ws.append(["VINTED-0002", "2026-03-16", "PERSON_B", -8, "EUR", "Vinted purchase: Test onesie", "VINTED", "2026-09-20"])
     wb.save(path)
 
     df = cash.parse_file(path, "2026-09-20 12:00:00")
-    # EntryID is internal-only (used for hashing) and not part of RAW_COLUMNS
-    # - see test_cash_fixture_parses_expected_fields's "Source" check above
-    # for the same pattern - so rows are identified by Description here.
+    # EntryID is internal-only (used for hashing) and not part of RAW_COLUMNS,
+    # so rows are identified by Description here instead.
 
     physical = df[df["Description"] == "Kioski snack"].iloc[0]
     assert physical["SourceBank"] == "CASH"
@@ -140,7 +140,7 @@ def test_vinted_prefixed_entry_id_reflected_in_bank_raw_export(tmp_path):
     wb = Workbook()
     ws = wb.active
     ws.title = "CashEntries"
-    ws.append(["EntryID", "Date", "Source", "Amount", "Currency", "Description", "RawReceiver", "ExportDate"])
+    ws.append(["EntryID", "Date", "Owner", "Amount", "Currency", "Description", "RawReceiver", "ExportDate"])
     ws.append(["CASH-0001", "2026-05-09", "PERSON_A", -5, "EUR", "Kioski snack", "Kioski", "2026-09-13"])
     ws.append(["VINTED-0001", "2026-03-12", "PERSON_B", 20, "EUR", "Vinted sale: Test jacket", "VINTED", "2026-09-20"])
     wb.save(path)
@@ -162,7 +162,7 @@ def test_optional_type_column_maps_to_transaction_type_raw(tmp_path):
     wb = Workbook()
     ws = wb.active
     ws.title = "CashEntries"
-    ws.append(["EntryID", "Date", "Source", "Amount", "Currency", "Description", "RawReceiver", "Type"])
+    ws.append(["EntryID", "Date", "Owner", "Amount", "Currency", "Description", "RawReceiver", "Type"])
     ws.append(["VINTED-0001", "2026-03-12", "PERSON_B", 20, "EUR", "Test jacket", "VINTED", "sale"])
     ws.append(["VINTED-0002", "2026-03-16", "PERSON_B", -8, "EUR", "Test onesie", "VINTED", "purchase"])
     ws.append(["CASH-0001", "2026-05-09", "PERSON_A", -5, "EUR", "Kioski snack", "Kioski", ""])
@@ -187,7 +187,7 @@ def test_missing_type_column_defaults_to_blank_transaction_type_raw(tmp_path):
     wb = Workbook()
     ws = wb.active
     ws.title = "CashEntries"
-    ws.append(["EntryID", "Date", "Source", "Amount", "RawReceiver"])
+    ws.append(["EntryID", "Date", "Owner", "Amount", "RawReceiver"])
     ws.append(["CASH-0001", "2026-05-09", "PERSON_A", -5, "Kioski"])
     wb.save(path)
 
@@ -210,7 +210,7 @@ def test_cash_raw_ids_differ_for_same_content_different_entry_id(tmp_path):
     wb = Workbook()
     ws = wb.active
     ws.title = "CashEntries"
-    ws.append(["EntryID", "Date", "Source", "Amount", "Currency", "Description", "RawReceiver", "ExportDate"])
+    ws.append(["EntryID", "Date", "Owner", "Amount", "Currency", "Description", "RawReceiver", "ExportDate"])
     ws.append(["CASH-0002", "2026-05-10", "PERSONAL", -2, "EUR", "Coffee", "Kioski", "2026-09-13"])
     ws.append(["CASH-0003", "2026-05-10", "PERSONAL", -2, "EUR", "Coffee", "Kioski", "2026-09-13"])
     wb.save(path)

@@ -47,10 +47,13 @@ def test_only_synthesizes_rows_for_brokers_with_no_bank_match(tmp_path):
     assert set(df["Amount"]) == {50.0, 30.0}
 
 
-def test_source_account_carries_portfolio_owner_not_owner_directly(tmp_path):
-    """The parser must never set Owner directly (see CLAUDE.md) - it carries
-    PortfolioOwner into SourceAccount so the existing SourceAccount->Owner
-    OwnershipRules resolve it the same way they do for every real account."""
+def test_source_account_is_the_real_broker_and_owner_is_set_directly(tmp_path):
+    """SourceAccount must be a real account identity (the broker this
+    dividend was paid into), not the owner - and Owner is set directly from
+    the real recorded PortfolioOwner fact, mirroring cash.py's own
+    exception to the "parsers never set Owner" rule (see CLAUDE.md): both
+    are cases where the source data itself states whose transaction this
+    is, not an inference from account naming."""
     path = tmp_path / "DividendHistory.xlsx"
     _write_dividend_history(path, [
         {"TradeDate": "2021-06-15", "Broker": "NORDNET", "Portfolio": "1", "PortfolioOwner": "PERSON_A", "NormalizedInstrument": "FORTUM", "NetDividendEUR": 50.0},
@@ -59,8 +62,8 @@ def test_source_account_carries_portfolio_owner_not_owner_directly(tmp_path):
     df = investment_dividends.parse_file(path, "2026-01-01 00:00:00")
 
     row = df.iloc[0]
-    assert row["SourceAccount"] == "PERSON_A"
-    assert "Owner" not in df.columns
+    assert row["SourceAccount"] == "NORDNET"
+    assert row["Owner"] == "PERSON_A"
 
 
 def test_receiver_text_avoids_colliding_with_real_merchant_name_rules(tmp_path):

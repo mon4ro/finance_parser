@@ -146,6 +146,7 @@ def parse_file(path: Path, imported_at: str) -> pd.DataFrame:
     out["MerchantArea"] = ""
     out["MerchantCategory"] = ""
     out["SourceFile"] = path.name
+    out["Owner"] = ""
 
     out["RawID"] = out.apply(make_raw_id, axis=1)
 

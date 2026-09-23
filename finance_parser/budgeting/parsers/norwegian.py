@@ -142,6 +142,7 @@ def parse_file(path: Path, imported_at: str) -> pd.DataFrame:
             "MerchantArea": normalise_text(row.get("Merchant Area", "")),
             "MerchantCategory": normalise_text(row.get("Merchant Category", "")),
             "SourceFile": path.name,
+            "Owner": "",
         })
 
     out = pd.DataFrame(rows)

@@ -39,16 +39,23 @@ BANK_RAW_SHEET = "CashRawExport"
 # instead of CASH, so TransactionType reads "Virtual" (see
 # transaction_type_for_source_bank in common.py) and content-based
 # CategoryRules/TransactionRules can scope narrowly to just these rows via
-# SourceBank, without inventing any new parser-level Include/Owner/category
-# logic (still just RAW_COLUMNS - normal Include/Owner/category rules apply
-# exactly like any other source).
+# SourceBank, without inventing any new parser-level Include/category logic
+# (still just RAW_COLUMNS - normal Include/category rules apply exactly
+# like any other source). Owner is the one exception - see CASH_COLUMNS'
+# "Owner" field below.
 VINTED_SOURCE_BANK = "VINTED"
 VINTED_ENTRY_ID_PREFIX = "VINTED-"
 
 CASH_COLUMNS = [
     "EntryID",
     "Date",
-    "Source",
+    # Renamed from "Source" (2026-09-23) to harmonise with
+    # UnifiedTransactions' own "Owner" column - same concept, same name on
+    # both sides now. Whoever types a row here already knows whose cash it
+    # was; unlike a bank export, this is a real per-row fact, not something
+    # that needs inferring. raw_to_unified_rows() in common.py prefers this
+    # explicit value over the generic SourceAccount-based default.
+    "Owner",
     "Amount",
     "RawReceiver",
 ]
@@ -122,12 +129,15 @@ def parse_file(path: Path, imported_at: str) -> pd.DataFrame:
     out = pd.DataFrame(index=df.index)
 
     # Cash is always its own bucket, independent of which person's physical
-    # cash was used. "Source" (whose cash) is intentionally not carried into
-    # RawTransactions/UnifiedTransactions - it is preserved in CashRawExport
-    # only, for audit. Do not use it to infer Owner here.
+    # cash was used - SourceAccount is always the fixed literal "CASH",
+    # never derived from Owner. Owner itself, unlike SourceAccount, DOES
+    # carry through to RawTransactions/UnifiedTransactions (see
+    # raw_to_unified_rows() in common.py) - it's a real per-row fact the
+    # person entering the row already states directly.
     out["EntryID"] = df["EntryID"].map(normalise_text)
     out["SourceAccount"] = "CASH"
     out["SourceBank"] = df["EntryID"].map(source_bank_for_entry_id)
+    out["Owner"] = df["Owner"].map(lambda v: normalise_text(v).upper())
 
     if "ExportDate" in df.columns:
         parsed_export_dates = df["ExportDate"].map(format_date)
@@ -197,8 +207,10 @@ def make_bank_raw_export_id(row: pd.Series, source_file: str = "") -> str:
 def parse_bank_raw_rows(path: Path, imported_at: str) -> pd.DataFrame:
     """
     Preserve the manually entered CashEntries.xlsx rows in ParsedTransactions.xlsx,
-    including the "Source" (whose cash) column that is deliberately dropped from
-    the canonical RawTransactions/UnifiedTransactions schema.
+    unchanged, for audit - including the "Owner" column, which (unlike most
+    of this raw audit sheet's other columns) also separately flows through
+    to the canonical RawTransactions/UnifiedTransactions schema now (see
+    parse_file() above).
     """
     df = read_input_file(path, required_columns=REQUIRED_COLUMNS).copy()
     df.columns = [normalise_header(c) for c in df.columns]

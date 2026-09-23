@@ -69,6 +69,16 @@ RAW_COLUMNS = [
     "MerchantArea",
     "MerchantCategory",
     "SourceFile",
+    # Appended, not inserted mid-list - same reasoning as the Balance/
+    # TransactionTypeRaw columns above. Blank for every parser except
+    # cash.py: CashEntries.xlsx is the one source where "whose transaction
+    # this is" is a real fact the person typing the row already states
+    # directly (its Owner column, renamed from the original "Source" -
+    # harmonised so the same concept has the same name on both sides),
+    # unlike a bank export, which never carries personal ownership
+    # information at all. raw_to_unified_rows() prefers this explicit
+    # value over the usual SourceAccount-based default when present.
+    "Owner",
 ]
 
 UNIFIED_COLUMNS = [
@@ -669,7 +679,11 @@ def raw_to_unified_rows(raw_new: pd.DataFrame) -> pd.DataFrame:
             "Description": description,
             "Message": message,
             "Include": default_include_for_row(row),
-            "Owner": default_owner_from_source_account(row["SourceAccount"]),
+            # An explicit raw-level Owner (currently only cash.py populates
+            # this, from CashEntries.xlsx's own Owner column) is a real,
+            # per-row fact stated directly by whoever entered the row -
+            # prefer it over the generic SourceAccount-based default.
+            "Owner": normalise_text(row.get("Owner", "")).upper() or default_owner_from_source_account(row["SourceAccount"]),
             "Supercategory": supercategory,
             "Category": category,
             "Subcategory": subcategory,
