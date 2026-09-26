@@ -82,6 +82,10 @@ def test_nordea_uses_raw_balance_directly(tmp_path):
     assert list(rows["Balance"]) == [930.0, 1030.0]
     assert list(rows["BalanceSource"]) == ["RAW_EXPORT", "RAW_EXPORT"]
     assert list(rows["Owner"]) == ["PERSONAL", "PERSONAL"]
+    # SourceAccount alone can't distinguish two same-bank personal accounts
+    # (e.g. two different people's own OP accounts) - SourceBank is the real
+    # institution, always present alongside it, not a replacement for it.
+    assert list(rows["SourceBank"]) == ["NORDEA", "NORDEA"]
     assert "PERSONAL" in stats["accounts_processed"]
 
 
@@ -154,6 +158,7 @@ budgeting:
     assert list(rows["Balance"]) == [1000.0, 1200.0]
     assert list(rows["BalanceSource"]) == ["RECONSTRUCTED", "RECONSTRUCTED"]
     assert list(rows["Owner"]) == ["HOUSEHOLD", "HOUSEHOLD"]
+    assert list(rows["SourceBank"]) == ["OP", "OP"]
     assert "HOUSEHOLD" in stats["accounts_processed"]
 
 

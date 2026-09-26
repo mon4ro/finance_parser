@@ -26,7 +26,7 @@ PROJECT_ROOT = Path(__file__).resolve().parents[2]
 DEFAULT_OUTPUT_WORKBOOK = PROJECT_ROOT / "output" / "budgeting" / "MonthlyAccountBalance.xlsx"
 
 MONTHLY_BALANCE_SHEET = "MonthlyAccountBalance"
-MONTHLY_BALANCE_COLUMNS = ["MonthEnd", "Year", "Month", "SourceAccount", "Owner", "Balance", "BalanceSource"]
+MONTHLY_BALANCE_COLUMNS = ["MonthEnd", "Year", "Month", "SourceAccount", "SourceBank", "Owner", "Balance", "BalanceSource"]
 
 RAW_EXPORT_SOURCE = "RAW_EXPORT"
 RECONSTRUCTED_SOURCE = "RECONSTRUCTED"
@@ -107,7 +107,7 @@ def _reliable_reconstructed_months(
     return pd.DatetimeIndex(reliable)
 
 
-def _raw_export_balance_rows(account: str, group: pd.DataFrame, months: pd.DatetimeIndex, owners: dict[str, str]) -> list[dict]:
+def _raw_export_balance_rows(account: str, bank: str, group: pd.DataFrame, months: pd.DatetimeIndex, owners: dict[str, str]) -> list[dict]:
     """
     Account whose bank export already carries its own running balance
     (Nordea's real "Saldo" field) - use it directly, merge-backward to each
@@ -132,6 +132,7 @@ def _raw_export_balance_rows(account: str, group: pd.DataFrame, months: pd.Datet
             "Year": month_end.year,
             "Month": month_end.month,
             "SourceAccount": account,
+            "SourceBank": bank,
             "Owner": owner,
             "Balance": round(float(r["_Balance"]), 2),
             "BalanceSource": RAW_EXPORT_SOURCE,
@@ -140,7 +141,7 @@ def _raw_export_balance_rows(account: str, group: pd.DataFrame, months: pd.Datet
 
 
 def _reconstructed_balance_rows(
-    account: str, group: pd.DataFrame, months: pd.DatetimeIndex, seeds: list[tuple[str, float]], owners: dict[str, str]
+    account: str, bank: str, group: pd.DataFrame, months: pd.DatetimeIndex, seeds: list[tuple[str, float]], owners: dict[str, str]
 ) -> list[dict]:
     """
     Account with no running balance of its own - reconstructed from the
@@ -178,6 +179,7 @@ def _reconstructed_balance_rows(
             "Year": month_end.year,
             "Month": month_end.month,
             "SourceAccount": account,
+            "SourceBank": bank,
             "Owner": owner,
             "Balance": round(float(balance), 2),
             "BalanceSource": RECONSTRUCTED_SOURCE,
@@ -253,10 +255,14 @@ def build_monthly_balances(
 
         banks = set(group["SourceBank"].unique())
         is_raw_export_account = bool(banks) and banks.issubset(BALANCE_FROM_RAW_EXPORT_BANKS)
+        # An account is expected to map to exactly one real bank across its
+        # whole history - "/"-joining is a defensive fallback (never
+        # observed in real data) rather than silently picking one.
+        bank = "/".join(sorted(banks)) if banks else ""
 
         if is_raw_export_account:
             months = month_end_dates(earliest_transaction_date, account_last_month_end)
-            account_rows = _raw_export_balance_rows(account, group, months, owners)
+            account_rows = _raw_export_balance_rows(account, bank, group, months, owners)
             if account_rows:
                 stats["accounts_processed"].append(account)
             else:
@@ -290,7 +296,7 @@ def build_monthly_balances(
             months = candidate_months
         else:
             months = _reliable_reconstructed_months(group, candidate_months, seeds)
-        account_rows = _reconstructed_balance_rows(account, group, months, seeds, owners)
+        account_rows = _reconstructed_balance_rows(account, bank, group, months, seeds, owners)
         if account_rows:
             stats["accounts_processed"].append(account)
         rows.extend(account_rows)
