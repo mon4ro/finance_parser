@@ -196,14 +196,57 @@ def test_load_raw_transactions_reads_balance_natively(tmp_path):
     assert float(df.iloc[0]["Balance"]) == 456.78
 
 
-def test_load_raw_transactions_uses_booking_date_not_value_date(tmp_path):
+def test_load_raw_transactions_uses_value_date_not_booking_date(tmp_path):
     """
-    Deliberately reads BookingDate - the real ledger/posting date, which is
-    what an end-of-day balance snapshot reflects - not ValueDate.
+    Deliberately reads ValueDate, not BookingDate - flipped 2026-09-26 after
+    a real NORWEGIAN transaction's ValueDate (2026-06-30) landed a real
+    month before its BookingDate (2026-07-02), silently shifting that
+    month's real spend into the wrong reconstructed-balance window. A card
+    hold reduces real spending power on its value/authorisation date, well
+    before the bank formally posts it - BookingDate is provably wrong for
+    this purpose. See load_raw_transactions()'s own docstring.
     """
     path = tmp_path / "ParsedTransactions.xlsx"
     _write_raw(path, [
-        {"RawID": "R-1", "SourceAccount": "HOUSEHOLD", "SourceBank": "OP", "BookingDate": "2026-03-15", "ValueDate": "2026-03-18", "Amount": -10},
+        {"RawID": "R-1", "SourceAccount": "HOUSEHOLD", "SourceBank": "OP", "BookingDate": "2026-03-18", "ValueDate": "2026-03-15", "Amount": -10},
+    ])
+
+    df = load_raw_transactions(path)
+
+    assert df.iloc[0]["_Date"].date().isoformat() == "2026-03-15"
+
+
+def test_load_raw_transactions_falls_back_to_booking_date_when_lag_too_large(tmp_path):
+    """
+    Real bug found while building the ValueDate fix above: one merchant's
+    refund exports set ValueDate to the *original* order's date, not the
+    refund's own - a gap of several weeks, wildly outside any real
+    settlement lag (confirmed at most 4 days across every real
+    NORWEGIAN/SPANKKI transaction checked). Trusting ValueDate there moved a
+    real credit clean out of its correct month. A gap this large means
+    ValueDate is answering a different question, not lagging normally.
+    """
+    path = tmp_path / "ParsedTransactions.xlsx"
+    _write_raw(path, [
+        {"RawID": "R-1", "SourceAccount": "HOUSEHOLD", "SourceBank": "NORWEGIAN", "BookingDate": "2026-02-18", "ValueDate": "2025-12-02", "Amount": 45, "TransactionTypeRaw": "CreditVoucher"},
+    ])
+
+    df = load_raw_transactions(path)
+
+    assert df.iloc[0]["_Date"].date().isoformat() == "2026-02-18"
+
+
+def test_load_raw_transactions_falls_back_to_booking_date_when_value_date_blank(tmp_path):
+    """
+    A pending card-authorisation hold has no BookingDate yet (see
+    KATEVARAUS_TRANSACTION_TYPES in common.py) - the reverse gap, a blank
+    ValueDate with a real BookingDate, isn't a real case in any bank export
+    seen so far, but falling back keeps this function safe either way
+    rather than silently producing a blank/unreconstructable date.
+    """
+    path = tmp_path / "ParsedTransactions.xlsx"
+    _write_raw(path, [
+        {"RawID": "R-1", "SourceAccount": "HOUSEHOLD", "SourceBank": "OP", "BookingDate": "2026-03-15", "ValueDate": "", "Amount": -10},
     ])
 
     df = load_raw_transactions(path)

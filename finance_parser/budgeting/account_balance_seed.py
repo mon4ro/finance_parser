@@ -13,6 +13,17 @@ from finance_parser.utilities.interactive_prompts import ask, ask_yes_no
 PROJECT_ROOT = Path(__file__).resolve().parents[2]
 DEFAULT_BUDGETING_WORKBOOK = PROJECT_ROOT / "output" / "budgeting" / "ParsedTransactions.xlsx"
 
+# Real settlement/authorisation lag (ValueDate to BookingDate) tops out at 4
+# calendar days across every real NORWEGIAN and SPANKKI transaction checked
+# (weekends/holidays included) - a card network settling a hold. Real
+# outlier found and deliberately excluded: one merchant's refund exports
+# carry a ValueDate matching the *original* order, not the refund event -
+# gaps of multiple weeks, on both the original purchase and its own
+# CreditVoucher row alike. A gap this large means ValueDate is answering a
+# different question, not lagging normally - fall back to BookingDate
+# rather than trust it blindly.
+MAX_VALUE_DATE_LAG_DAYS = 7
+
 # Not a real bank account with a balance to check against a bank app - the
 # manually-maintained CASH ledger tracks small untracked real expenses, not
 # an account with its own concept of "current balance".
@@ -38,9 +49,27 @@ def load_raw_transactions(budgeting_workbook: Path) -> pd.DataFrame:
     forever. Reading Raw sidesteps both classes of bug structurally, not by
     patching around them.
 
-    Uses BookingDate (not ValueDate) as the real ledger date - the date a
-    transaction actually posted, which is what an end-of-day balance
-    snapshot reflects.
+    Uses ValueDate as the real balance-affecting date when it's within
+    MAX_VALUE_DATE_LAG_DAYS of BookingDate (falling back to BookingDate
+    otherwise, or when ValueDate is blank) - not BookingDate alone, as this
+    used to read unconditionally. Real bug this fixed: a card transaction's
+    real value/authorisation date can land on the last day of a month while
+    its BookingDate (when the bank formally posts/settles it) lands 1-3 days
+    later, in the next month - confirmed for real NORWEGIAN transactions (a
+    credit card: an authorisation hold reduces real spending power
+    immediately, well before it's "posted") and, less often, SPANKKI. Every
+    month whose reconstructed balance's window included the wrong side of
+    that boundary was off by exactly the misplaced transaction's amount, for
+    every earlier month too (backward projection compounds it). The lag cap
+    exists because trusting ValueDate unconditionally introduced a new, much
+    larger error: one merchant's refund exports set ValueDate to the
+    original order's date rather than the refund's own - see
+    MAX_VALUE_DATE_LAG_DAYS above. OP and NORDEA never showed a real
+    ValueDate/BookingDate month-crossing gap at all in real data (NORDEA's
+    two dates are always identical) - so this is a zero-risk change for
+    both, and NORDEA's own raw-export-balance path (see
+    BALANCE_FROM_RAW_EXPORT_BANKS) is unaffected either way for the same
+    reason.
 
     Applies merge_tili_prefixed_source_account() so a "TILI <name>"
     SourceAccount value from before the filename-prefix fix in
@@ -65,7 +94,14 @@ def load_raw_transactions(budgeting_workbook: Path) -> pd.DataFrame:
 
     df["SourceAccount"] = df["SourceAccount"].map(normalise_text)
     df["SourceBank"] = df["SourceBank"].map(normalise_text)
-    df["_Date"] = pd.to_datetime(df["BookingDate"], errors="coerce")
+    booking_date = pd.to_datetime(df["BookingDate"], errors="coerce")
+    if "ValueDate" in df.columns:
+        value_date = pd.to_datetime(df["ValueDate"], errors="coerce")
+        lag_days = (booking_date - value_date).dt.days.abs()
+        trust_value_date = value_date.notna() & (booking_date.isna() | (lag_days <= MAX_VALUE_DATE_LAG_DAYS))
+        df["_Date"] = value_date.where(trust_value_date, booking_date)
+    else:
+        df["_Date"] = booking_date
 
     if "Balance" not in df.columns:
         df["Balance"] = pd.NA

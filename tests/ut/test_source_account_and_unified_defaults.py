@@ -124,6 +124,79 @@ def test_raw_to_unified_does_not_carry_balance_or_transaction_type_raw_through()
     assert "TransactionTypeRaw" not in unified.columns
 
 
+def test_raw_to_unified_excludes_pending_card_hold():
+    """
+    Real incident this guards against: a card-authorisation hold
+    (TransactionTypeRaw "Katevaraus") reached UnifiedTransactions, and the
+    same real purchase later reappeared under a different RawID once a
+    subsequent import showed it settled - canonical_transaction_key()
+    didn't catch the two as duplicates (it hashes ValueDate, which shifted
+    by a day between the hold and the settlement), so both persisted and
+    double-counted the same real spend in every UnifiedTransactions-based
+    total. The hold itself must never be promoted to Unified at all.
+    """
+    raw = pd.DataFrame([
+        {
+            "RawID": "NWG-HOLD-1",
+            "SourceAccount": "PERSONAL",
+            "SourceBank": "NORWEGIAN",
+            "BookingDate": "",
+            "ValueDate": "2026-06-04",
+            "Amount": -30.0,
+            "TransactionTypeRaw": "Katevaraus",
+            "Description": "",
+            "RawReceiver": "Some Shop",
+            "ReceiverAccount": "",
+            "ReceiverBankBIC": "",
+            "Reference": "",
+            "Message": "",
+            "ArchiveID": "",
+            "Balance": "",
+            "CurrencyAmount": "",
+            "Currency": "EUR",
+            "Rate": 1,
+            "MerchantArea": "",
+            "MerchantCategory": "",
+            "ExportDate": "2026-06-04",
+            "ImportedAt": "2026-06-07 12:00:00",
+            "SourceFile": "norwegian_1.csv",
+        },
+        {
+            "RawID": "NWG-SETTLED-1",
+            "SourceAccount": "PERSONAL",
+            "SourceBank": "NORWEGIAN",
+            "BookingDate": "2026-06-05",
+            "ValueDate": "2026-06-05",
+            "Amount": -30.0,
+            "TransactionTypeRaw": "Osto",
+            "Description": "",
+            "RawReceiver": "Some Shop",
+            "ReceiverAccount": "",
+            "ReceiverBankBIC": "",
+            "Reference": "",
+            "Message": "",
+            "ArchiveID": "",
+            "Balance": "",
+            "CurrencyAmount": "",
+            "Currency": "EUR",
+            "Rate": 1,
+            "MerchantArea": "",
+            "MerchantCategory": "",
+            "ExportDate": "2026-06-06",
+            "ImportedAt": "2026-06-07 12:00:00",
+            "SourceFile": "norwegian_2.csv",
+        },
+    ])
+
+    for col in RAW_COLUMNS:
+        if col not in raw.columns:
+            raw[col] = ""
+
+    unified = raw_to_unified_rows(raw[RAW_COLUMNS])
+
+    assert list(unified["RawID"]) == ["NWG-SETTLED-1"]
+
+
 def test_raw_to_unified_spankki_include_default_from_settings():
     raw = pd.DataFrame([{
         "RawID": "SPK-1",

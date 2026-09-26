@@ -230,6 +230,44 @@ budgeting:
     assert "2026-02-28" not in by_month
 
 
+def test_reconstructed_balance_attributes_month_end_hold_to_the_right_month(tmp_path):
+    """
+    Real bug found via a real NORWEGIAN account reconciliation: a card
+    transaction's real value/authorisation date (ValueDate) landed on the
+    last day of a month, but its BookingDate (when the bank formally
+    posted/settled it) landed 1-2 days later, in the *next* calendar month.
+    Using BookingDate for the reconstruction window put this transaction in
+    the wrong month's window, making the earlier month's balance wrong by
+    exactly its amount - see load_raw_transactions()'s own docstring.
+
+    Here: a -30 spend really happened 2026-02-28 (ValueDate) but wasn't
+    posted until 2026-03-02 (BookingDate). Feb's own reconstructed balance
+    (seed at March 31) must already reflect it - it happened before Feb
+    ended - not treat it as a March event to subtract back out.
+    """
+    path = tmp_path / "ParsedTransactions.xlsx"
+    _write_raw(path, [
+        {"SourceAccount": "NORWEGIAN", "SourceBank": "NORWEGIAN", "BookingDate": "2026-03-02", "ValueDate": "2026-02-28", "Amount": -30},
+    ])
+    settings = _settings_with_seeds(
+        """
+budgeting:
+  account_balance_seeds:
+    NORWEGIAN:
+      "2026-03-31": 100.0
+""",
+        tmp_path,
+    )
+
+    result, stats = build_monthly_balances(path, settings, as_of=date(2026, 4, 1))
+
+    rows = result[result["SourceAccount"] == "NORWEGIAN"]
+    by_month = dict(zip(rows["MonthEnd"], rows["Balance"]))
+    # Feb already includes the -30 (it happened before Feb ended), so
+    # nothing needs subtracting back out of the seed for Feb's own balance.
+    assert by_month["2026-02-28"] == 100.0
+
+
 def test_reconstructed_backward_reconstruction_stops_at_first_gap(tmp_path):
     """
     Real bug found and fixed via a real dry-run: backward reconstruction

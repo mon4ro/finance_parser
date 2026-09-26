@@ -14,6 +14,7 @@ from finance_parser.budgeting.account_balance_seed import (
     owner_lookup,
 )
 from finance_parser.budgeting.parsers.investment_dividends import SOURCE_BANK as INVESTMENT_DIVIDEND_SOURCE_BANK
+from finance_parser.common import KATEVARAUS_TRANSACTION_TYPES
 from finance_parser.settings import AppSettings, get_settings
 from finance_parser.utilities.fresh_workbook_writer import (
     records_to_sheet_values,
@@ -31,14 +32,10 @@ MONTHLY_BALANCE_COLUMNS = ["MonthEnd", "Year", "Month", "SourceAccount", "Source
 RAW_EXPORT_SOURCE = "RAW_EXPORT"
 RECONSTRUCTED_SOURCE = "RECONSTRUCTED"
 
-# A pending card-authorisation hold (real case: Norwegian, a credit card) -
-# not a settled transaction, and its own real BookingDate is blank in the
-# export (only ValueDate is populated) since it hasn't posted yet. That
-# already excludes it from the date-filtered group today, but only as a
-# side effect of being dateless - explicitly filtering by type here means
-# this stays correct even if a future export ever gives a pending hold a
-# real BookingDate.
-KATEVARAUS_TRANSACTION_TYPES = {"KATEVARAUS"}
+# KATEVARAUS_TRANSACTION_TYPES now lives in common.py - raw_to_unified_rows()
+# also needs it (to keep a pending hold out of UnifiedTransactions entirely),
+# so it moved to the shared module rather than staying duplicated here. Kept
+# imported under the same name so nothing else in this file needs to change.
 
 
 def last_completed_month_end(today: date) -> pd.Timestamp:

@@ -129,6 +129,26 @@ IMPORT_LOG_COLUMNS = [
     "Error",
 ]
 
+# A pending card-authorisation hold (real case: Norwegian, a credit card) -
+# not a settled transaction. Its real BookingDate is blank in the export
+# (only ValueDate is populated) since it hasn't posted yet, and the same
+# real purchase reappears under a *different* RawID once a later export
+# shows it settled (the hold's own row is never overwritten in place).
+# canonical_transaction_key() alone doesn't catch this as a duplicate - it
+# hashes ValueDate, which commonly shifts by a day or two between a hold's
+# authorisation date and the settled transaction's own date. Real incident
+# this guards against: three such pairs (hold + later settlement) both
+# reached UnifiedTransactions as separate rows, double-counting the same
+# real spend in any Unified-based total (Master Budget's category
+# formulas included) - build_monthly_account_balance.py already filtered
+# this type out for its own purpose (reconstructed balances), but nothing
+# stopped it from being promoted to Unified in the first place. Excluding
+# it here, at the one place raw rows become Unified rows, fixes every
+# downstream consumer at once rather than requiring each one to filter it
+# separately. RawTransactions keeps the hold row untouched either way -
+# only the Unified promotion is skipped, so the raw audit trail survives.
+KATEVARAUS_TRANSACTION_TYPES = {"KATEVARAUS"}
+
 SOURCE_TO_DEFAULT_OWNER = {
     "joint": "Shared",
     "shared": "Shared",
@@ -649,6 +669,14 @@ def raw_to_unified_rows(raw_new: pd.DataFrame) -> pd.DataFrame:
     rows = []
 
     for _, row in raw_new.iterrows():
+        # A pending hold, not a real completed transaction - see
+        # KATEVARAUS_TRANSACTION_TYPES above. Never promoted to Unified; the
+        # same real purchase gets its own row once a later import shows it
+        # settled. RawTransactions still keeps this row untouched.
+        transaction_type_raw = normalise_text(row.get("TransactionTypeRaw", "")).upper()
+        if transaction_type_raw in KATEVARAUS_TRANSACTION_TYPES:
+            continue
+
         raw_receiver = row["RawReceiver"]
         description = row["Description"]
         message = row["Message"]
