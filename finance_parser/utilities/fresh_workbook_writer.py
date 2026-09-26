@@ -59,8 +59,25 @@ def read_workbook_values_only(path: Path) -> dict[str, list[list[object]]]:
     The workbook object loaded from the existing file is closed and never saved.
     This is the core anti-corruption guarantee: existing workbook XML packages
     are treated as read-only data sources.
+
+    Uses data_only=True - a formula cell's last cached result, never its
+    formula text. Every sheet this pipeline itself writes is already plain
+    values (no formulas), so this is a no-op for them. Real bug this fixed:
+    a foreign sheet pasted into the workbook by hand (not written by this
+    pipeline) can carry real Excel formulas of its own - reading those with
+    data_only=False returned the formula TEXT as a string (e.g.
+    "=MONTH(...)"), and write_fresh_workbook()'s plain cell.value assignment
+    then let openpyxl reinterpret that leading "=" as a live formula in the
+    freshly-built workbook - one with no Table object or defined name behind
+    any structured/named reference the original formula relied on. Excel
+    flagged and stripped it as corrupt on next open. A cached value is
+    always safe to round-trip as a plain value; formula text never is,
+    outside the one sheet (UnifiedTransactions's ReviewStatus column) this
+    pipeline deliberately constructs its own formula for via
+    apply_review_status_column() - an explicit write, not a read of someone
+    else's.
     """
-    wb = load_workbook(path, data_only=False, read_only=True)
+    wb = load_workbook(path, data_only=True, read_only=True)
     try:
         sheets: dict[str, list[list[object]]] = {}
         for ws in wb.worksheets:

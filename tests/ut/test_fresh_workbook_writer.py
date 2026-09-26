@@ -1,5 +1,7 @@
 import os
+import re
 import time
+import zipfile
 from pathlib import Path
 
 from openpyxl import Workbook, load_workbook
@@ -68,6 +70,66 @@ def test_fresh_writer_reads_values_and_writes_fresh_package(tmp_path):
     assert wb2["UnifiedTransactions"]["B2"].value == "New"
     assert wb2["ChangeLog"].max_row == 2
     wb2.close()
+
+
+def _inject_cached_formula_value(path: Path, sheet_xml: str, cell_ref: str, cached_value: str) -> None:
+    """
+    Post-process a saved .xlsx to give one formula cell a real cached <v> -
+    what a real Excel-authored file actually looks like, and what openpyxl
+    itself never produces (it writes formula cells with no cached result).
+    """
+    with zipfile.ZipFile(path) as zf:
+        names = zf.namelist()
+        data = {name: zf.read(name) for name in names}
+
+    xml = data[sheet_xml].decode("utf-8")
+    pattern = re.compile(rf'(<c r="{cell_ref}"[^>]*><f>[^<]*</f>)<v></v>(</c>)')
+    xml, count = pattern.subn(rf'\1<v>{cached_value}</v>\2', xml)
+    assert count == 1, f"expected exactly one match for {cell_ref} in {sheet_xml}"
+    data[sheet_xml] = xml.encode("utf-8")
+
+    with zipfile.ZipFile(path, "w", zipfile.ZIP_DEFLATED) as zf:
+        for name in names:
+            zf.writestr(name, data[name])
+
+
+def test_read_workbook_values_only_reads_cached_formula_result_not_formula_text(tmp_path):
+    """
+    Real bug found and fixed: a foreign sheet pasted into the workbook by
+    hand (not written by this pipeline) can carry real Excel formulas -
+    reading those with data_only=False returned the formula TEXT as a
+    string, and write_fresh_workbook()'s plain cell assignment then let
+    openpyxl reinterpret the leading "=" as a live formula in the freshly
+    built workbook, one with no Table/defined-name behind whatever
+    structured reference the original relied on. Excel flagged and stripped
+    it as corrupt on next open. Reading the cached result instead (what
+    data_only=True gives) and writing that back as a plain value sidesteps
+    the whole failure class - never reconstructs a formula from someone
+    else's formula text.
+    """
+    source = tmp_path / "source.xlsx"
+    wb = Workbook()
+    ws = wb.active
+    ws.title = "PastedSheet"
+    ws.append(["Label", "Computed"])
+    ws["B2"] = "=1+1"
+    wb.save(source)
+    wb.close()
+
+    _inject_cached_formula_value(source, "xl/worksheets/sheet1.xml", "B2", "2")
+
+    sheets = read_workbook_values_only(source)
+
+    assert sheets["PastedSheet"][1][1] == 2
+
+    output = tmp_path / "fresh.xlsx"
+    write_fresh_workbook(output, sheets, excel_tables=False)
+
+    wb2 = load_workbook(output, data_only=False, read_only=True)
+    value = wb2["PastedSheet"]["B2"].value
+    wb2.close()
+    # A live formula would start with "=" - must be the plain cached number.
+    assert value == 2
 
 
 def test_apply_review_status_column_writes_expected_formula_and_colours():
