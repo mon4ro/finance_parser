@@ -129,6 +129,59 @@ def test_categorise_only_changes_unified_rows_with_blank_comments(tmp_path):
     wb.close()
 
 
+def test_force_rule_reasserting_the_same_value_is_not_reported_as_a_change(tmp_path):
+    """
+    Real bug found and fixed: OverwriteMode=FORCE's should_set_value() returns
+    True unconditionally, so re-running a FORCE rule against a row that already
+    has the exact target value got reported (and counted in stats) as a real
+    change, even though nothing actually differed - inflating "rows changed" in
+    every dry-run/real-run report. The normaliser's own apply_rules() already
+    guards against this identical case; apply_rule_to_row() must too.
+    """
+    workbook = tmp_path / "ParsedTransactions.xlsx"
+    rules = tmp_path / "TransactionRules.xlsx"
+
+    wb = Workbook()
+    ws = wb.active
+    ws.title = "CategoryRules"
+    ws.append([
+        "RuleID", "Enabled", "Priority", "RuleName", "RuleGroup",
+        "MatchField", "MatchType", "Pattern", "CaseSensitive",
+        "ConditionField1", "ConditionMatchType1", "ConditionPattern1",
+        "ConditionField2", "ConditionMatchType2", "ConditionPattern2",
+        "SetSupercategory", "SetCategory", "SetSubcategory", "SetOwner", "SetTag", "SetComments",
+        "StopIfMatched", "OverwriteMode", "Confidence", "Notes",
+    ])
+    ws.append([
+        "CR0001", "YES", 100, "Force supermarket override", "GROCERY_OVERRIDE",
+        "NormalizedReceiver", "EXACT", "LIDL", "NO",
+        None, None, None,
+        None, None, None,
+        "EXPENSES", None, None, None, None, None,
+        "YES", "FORCE", "HIGH", None,
+    ])
+    wb.create_sheet("OwnershipRules").append([
+        "RuleID", "Enabled", "Priority", "RuleName", "MatchField", "MatchType", "Pattern", "CaseSensitive",
+        "SetOwner", "ClearOwner", "StopIfMatched", "OverwriteMode", "Notes",
+    ])
+    wb.save(rules)
+
+    tw = Workbook()
+    tws = tw.active
+    tws.title = "UnifiedTransactions"
+    tws.append([
+        "UnifiedID", "RawID", "SourceBank", "SourceAccount", "Include", "Amount",
+        "RawReceiver", "NormalizedReceiver", "Description", "Message",
+        "Supercategory", "Category", "Subcategory", "Owner", "Review/Notes",
+    ])
+    # Already EXPENSES - the FORCE rule matches and re-asserts the identical value.
+    tws.append(["U1", "R1", "OP", "PERSON_1", "YES", -10, "Lidl", "LIDL", "", "", "EXPENSES", "", "", "", ""])
+    tw.save(workbook)
+
+    changes = categorise_workbook(workbook, rules, dry_run=True)
+    assert changes == []
+
+
 def test_load_rules_returns_empty_list_for_missing_sheet_not_a_crash(tmp_path):
     """
     TransactionRules.template.xlsx deliberately ships with no CategoryRules

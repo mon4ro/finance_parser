@@ -257,7 +257,17 @@ def apply_rule_to_row(
 
         if should_set_value(old_value, new_value, overwrite_mode):
             row[target_field] = new_value
-            changes[target_field] = (display_blank(old_value), display_blank(new_value))
+            # Real bug found and fixed: FORCE overwrite mode's should_set_value()
+            # returns True unconditionally, so a FORCE rule re-asserting a value
+            # the row already had (e.g. re-running after nothing changed) got
+            # reported as a "change" even though old_value == new_value - a pure
+            # no-op counted as real work. The normaliser's own apply_rules()
+            # already guards against this exact case (see its "Avoid counting
+            # no-op FORCE assignments as updates" comment); this mirrors that
+            # fix here. The field write itself is harmless either way - only
+            # the change record (and the stats/report it drives) is skipped.
+            if as_text(old_value) != as_text(new_value):
+                changes[target_field] = (display_blank(old_value), display_blank(new_value))
 
     return changes
 
