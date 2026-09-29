@@ -11,6 +11,7 @@ from pathlib import Path
 import pandas as pd
 
 from finance_parser.common import CHANGE_LOG_COLUMNS, CHANGE_LOG_SHEET
+from finance_parser.utilities.run_logger import DEFAULT_LOG_RETENTION, prune_old_logs, start_run_log
 
 
 PROJECT_ROOT = Path(__file__).resolve().parents[2]
@@ -18,6 +19,13 @@ PROJECT_ROOT = Path(__file__).resolve().parents[2]
 BUDGETING_INPUT_DIR = PROJECT_ROOT / "input" / "budgeting"
 BUDGETING_OUTPUT_DIR = PROJECT_ROOT / "output" / "budgeting"
 BUDGETING_RULES_DIR = PROJECT_ROOT / "rules" / "budgeting"
+# Every run (dry or real) shares one rotating pool of the most recent
+# DEFAULT_LOG_RETENTION logs - a dry run is exactly what someone reviews a
+# log for (checking what a real run would do before doing it), so splitting
+# dry vs real into separate pools would just make the thing you actually
+# want to read harder to find.
+BUDGETING_LOG_DIR = BUDGETING_OUTPUT_DIR / "_logs"
+BUDGETING_LOG_LABEL = "budgeting_pipeline"
 
 DEFAULT_INPUT_PATH = BUDGETING_INPUT_DIR
 DEFAULT_WORKBOOK = BUDGETING_OUTPUT_DIR / "ParsedTransactions.xlsx"
@@ -131,6 +139,18 @@ def build_arg_parser() -> argparse.ArgumentParser:
         "--script",
         default=None,
         help="With --show-changelog, only show entries from this Script value (exact match).",
+    )
+    parser.add_argument(
+        "--log-dir",
+        default=str(BUDGETING_LOG_DIR),
+        help="Where to write a copy of this run's full output (including every stage's own "
+             f"printed output). Defaults to output/budgeting/_logs/. The {DEFAULT_LOG_RETENTION} "
+             "most recent logs are kept; older ones are pruned automatically after each run.",
+    )
+    parser.add_argument(
+        "--no-log",
+        action="store_true",
+        help="Don't write a log file for this run.",
     )
     return parser
 
@@ -438,7 +458,18 @@ def main() -> None:
         )
         return
 
-    raise SystemExit(run_pipeline(args))
+    if args.no_log:
+        raise SystemExit(run_pipeline(args))
+
+    log_dir = Path(args.log_dir).expanduser().resolve()
+    mode = "DRY RUN" if args.dry_run else "REAL RUN"
+    with start_run_log(log_dir, BUDGETING_LOG_LABEL, mode=mode, argv=sys.argv) as log:
+        print(f"(Full output also being written to: {log.log_path})")
+        try:
+            exit_code = run_pipeline(args)
+        finally:
+            prune_old_logs(log_dir, BUDGETING_LOG_LABEL)
+    raise SystemExit(exit_code)
 
 
 if __name__ == "__main__":
