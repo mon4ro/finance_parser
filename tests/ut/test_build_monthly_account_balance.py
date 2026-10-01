@@ -713,3 +713,55 @@ def test_cash_and_investment_dividend_sources_are_excluded_from_imported_through
     _, stats = build_monthly_balances(path, settings, as_of=date(2026, 10, 1))
 
     assert stats["imported_through"] == {}
+
+
+def test_latest_balance_stat_reports_the_most_recent_month_per_account(tmp_path):
+    """
+    Convenience for a by-eye sanity check at the command line (does the
+    latest calculated balance look plausible, or does an account need
+    reseeding?) - must be the actual last row build_monthly_balances()
+    produced per account, not a separate recomputation.
+    """
+    path = tmp_path / "ParsedTransactions.xlsx"
+    _write_raw(
+        path,
+        [
+            {"SourceAccount": "PERSONAL", "SourceBank": "NORDEA", "BookingDate": "2026-01-10", "Amount": -50, "Balance": 950},
+            {"SourceAccount": "PERSONAL", "SourceBank": "NORDEA", "BookingDate": "2026-02-05", "Amount": 100, "Balance": 1030},
+            {"SourceAccount": "PERSONAL", "SourceBank": "NORDEA", "BookingDate": "2026-03-01", "Amount": 1, "Balance": 1031},
+            {"SourceAccount": "HOUSEHOLD", "SourceBank": "OP", "BookingDate": "2026-01-15", "Amount": -30},
+            {"SourceAccount": "HOUSEHOLD", "SourceBank": "OP", "BookingDate": "2026-02-10", "Amount": 200},
+            {"SourceAccount": "HOUSEHOLD", "SourceBank": "OP", "BookingDate": "2026-03-01", "Amount": 1},
+        ],
+        owners={"PERSONAL": "PERSONAL", "HOUSEHOLD": "HOUSEHOLD"},
+    )
+    settings = _settings_with_seeds(
+        """
+budgeting:
+  account_balance_seeds:
+    HOUSEHOLD:
+      "2026-01-15": 1000.0
+""",
+        tmp_path,
+    )
+
+    _, stats = build_monthly_balances(path, settings, as_of=date(2026, 3, 5))
+
+    assert stats["latest_balance"]["PERSONAL"] == {
+        "month_end": "2026-02-28", "balance": 1030.0, "source": "RAW_EXPORT",
+    }
+    assert stats["latest_balance"]["HOUSEHOLD"] == {
+        "month_end": "2026-02-28", "balance": 1200.0, "source": "RECONSTRUCTED",
+    }
+
+
+def test_latest_balance_stat_is_empty_when_no_rows_produced(tmp_path):
+    path = tmp_path / "ParsedTransactions.xlsx"
+    _write_raw(path, [
+        {"SourceAccount": "SPANKKI", "SourceBank": "SPANKKI", "BookingDate": "2026-01-15", "Amount": -30},
+    ])
+    settings = _settings_with_seeds("budgeting:\n  default_include: 'YES'\n", tmp_path)
+
+    _, stats = build_monthly_balances(path, settings, as_of=date(2026, 3, 1))
+
+    assert stats["latest_balance"] == {}

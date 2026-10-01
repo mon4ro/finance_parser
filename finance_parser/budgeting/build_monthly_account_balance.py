@@ -398,6 +398,22 @@ def build_monthly_balances(
     if len(result) > 0:
         result = result.sort_values(["SourceAccount", "MonthEnd"]).reset_index(drop=True)
 
+    # Convenience for a quick by-eye sanity check (not a new calculation -
+    # just the last row of what build_monthly_balances() already produced
+    # per account, since result is already sorted by SourceAccount/MonthEnd).
+    # BalanceSource is included because a RECONSTRUCTED figure (seed + summed
+    # transactions since) is the one that can silently drift if a seed is
+    # stale or missing real history - a RAW_EXPORT figure is the bank's own
+    # reported balance, not derived at all.
+    stats["latest_balance"] = {
+        row["SourceAccount"]: {
+            "month_end": row["MonthEnd"],
+            "balance": row["Balance"],
+            "source": row["BalanceSource"],
+        }
+        for _, row in result.groupby("SourceAccount").tail(1).iterrows()
+    } if len(result) > 0 else {}
+
     return result, stats
 
 
@@ -441,7 +457,11 @@ def main() -> None:
     print("Monthly account balance build complete." if not args.dry_run else "Monthly account balance dry run complete.")
     print(f"Accounts with a monthly balance: {len(stats['accounts_processed'])}")
     for account in stats["accounts_processed"]:
-        print(f"  - {account}")
+        latest = stats["latest_balance"].get(account)
+        if latest:
+            print(f"  - {account}: {latest['month_end']} = {latest['balance']} ({latest['source']})")
+        else:
+            print(f"  - {account}")
 
     if stats["accounts_no_seed_configured"]:
         print()
