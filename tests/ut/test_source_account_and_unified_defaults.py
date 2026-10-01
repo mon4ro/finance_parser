@@ -4,6 +4,7 @@ from pathlib import Path
 from finance_parser.common import (
     RAW_COLUMNS,
     canonical_source_account,
+    canonical_transaction_key,
     infer_source_account_from_filename,
     raw_to_unified_rows,
 )
@@ -31,6 +32,35 @@ def test_canonical_source_account_repairs_polluted_labels():
     assert canonical_source_account("HOUSEHOLD TAPAHTUMAT20260501 20260603", "OP") == "HOUSEHOLD"
     assert canonical_source_account("PERSONAL TAPAHTUMAT20260503 20260603", "OP") == "PERSONAL"
     assert canonical_source_account("CHILD TAPAHTUMAT20260503 20260603 2", "OP") == "CHILD"
+
+
+def test_canonical_transaction_key_is_independent_of_raw_id():
+    """
+    Real bug found and fixed: canonical_transaction_key() called
+    canonical_source_account(row) - passing the *entire row* where a single
+    scalar SourceAccount value was expected. Its (now-removed) Series-
+    handling fallback iterated every non-null field in the row and returned
+    the first one that produced a result - RawID is the first column in
+    RAW_COLUMNS, so the "account" component was actually keyed off RawID
+    for every row, in every bank, always. This directly contradicted the
+    function's own docstring promise ("independent of RawID") and broke
+    drop_duplicates_against_existing_only()'s ability to recognise the same
+    real transaction re-appearing under a different RawID - confirmed with
+    real data: the same NORWEGIAN transaction, re-exported in a second file
+    with an overlapping date range, went undetected because
+    disambiguate_duplicate_raw_ids() had (correctly) given it a different
+    RawID, which then leaked into a canonical key that was supposed to
+    ignore RawID entirely.
+    """
+    base = {
+        "SourceAccount": "NORWEGIAN", "SourceBank": "NORWEGIAN",
+        "ValueDate": "2026-07-20", "Amount": -15.5,
+        "RawReceiver": "SOME SHOP", "Reference": "", "Currency": "EUR",
+    }
+    row_a = pd.Series({**base, "RawID": "NWG-abc123"})
+    row_b = pd.Series({**base, "RawID": "NWG-abc123-dup2"})
+
+    assert canonical_transaction_key(row_a) == canonical_transaction_key(row_b)
 
 
 def test_raw_to_unified_leaves_normalized_receiver_blank():

@@ -17,6 +17,7 @@ from finance_parser.common import (
     UNIFIED_SHEET,
     imported_at_now,
     add_canonical_transaction_key,
+    drop_duplicates_against_existing_only,
     make_import_run_id,
     raw_to_unified_rows,
     normalize_source_metadata,
@@ -125,6 +126,41 @@ def detect_parser(path: Path):
         f"Ambiguous parser match for {path.name}: "
         + ", ".join(m.SOURCE_BANK for m in matches)
     )
+
+
+def disambiguate_duplicate_raw_ids(df: pd.DataFrame) -> pd.DataFrame:
+    """
+    Two genuinely separate real transactions can hash to the identical RawID
+    when a bank's export carries no field rich enough to tell them apart on
+    its own (see e.g. norwegian.py's make_raw_id() - NORWEGIAN has no real
+    ArchiveID/Reference; confirmed with real data: two airline seats billed
+    as two separate identical charges the same day, several bars/petrol
+    stations with two or three back-to-back purchases at an identical round
+    price). The old behaviour (drop_duplicates(subset=["RawID"])) silently
+    discarded the extras.
+
+    Rather than changing make_raw_id()'s hash formula itself - which would
+    change the RawID of every already-imported row for that bank too,
+    forcing a migration (see utilities/refresh_budgeting_bank_raw_ids.py) -
+    give the 2nd, 3rd, ... occurrence of an exact RawID *within this one
+    parse batch* a stable, deterministic suffix. Re-parsing the exact same
+    file later reproduces the same row order and therefore the same
+    suffixes, so a genuine re-import of that file still correctly matches
+    against what's already in the workbook (see
+    drop_duplicates_against_existing_only() in common.py, which this feeds
+    into). Every already-imported RawID (for every bank) is completely
+    unaffected: a batch where a RawID never repeats never touches this at
+    all.
+    """
+    out = df.copy()
+    occurrence = out.groupby("RawID").cumcount()
+    needs_suffix = occurrence > 0
+    out.loc[needs_suffix, "RawID"] = (
+        out.loc[needs_suffix, "RawID"].astype(str)
+        + "-dup"
+        + (occurrence[needs_suffix] + 1).astype(str)
+    )
+    return out
 
 
 def parse_import_files(
@@ -267,7 +303,7 @@ def parse_import_files(
         )
 
     combined_raw = pd.concat(non_empty_frames, ignore_index=True)
-    combined_raw = combined_raw.drop_duplicates(subset=["RawID"], keep="first")
+    combined_raw = disambiguate_duplicate_raw_ids(combined_raw)
 
     import_log = pd.concat(import_log_frames, ignore_index=True) if import_log_frames else pd.DataFrame(columns=IMPORT_LOG_COLUMNS)
 
@@ -446,7 +482,7 @@ def append_to_output(
     combined_raw = pd.concat([existing_raw, imported_raw_for_merge], ignore_index=True)
     combined_raw = add_canonical_transaction_key(combined_raw)
     combined_raw = merge_blank_metadata_before_dedup(combined_raw)
-    combined_raw = combined_raw.drop_duplicates(subset=["_CanonicalTransactionKey"], keep="first")
+    combined_raw = drop_duplicates_against_existing_only(combined_raw, len(existing_raw))
     combined_raw = combined_raw.drop(columns=["_CanonicalTransactionKey"])
 
     # Create candidate Unified rows for all imported rows whose exact Unified RawID
@@ -465,7 +501,7 @@ def append_to_output(
     combined_unified = pd.concat([existing_unified, new_unified_candidates], ignore_index=True)
     combined_unified = add_canonical_transaction_key(combined_unified)
     combined_unified = merge_blank_metadata_before_dedup(combined_unified)
-    combined_unified = combined_unified.drop_duplicates(subset=["_CanonicalTransactionKey"], keep="first")
+    combined_unified = drop_duplicates_against_existing_only(combined_unified, len(existing_unified))
     combined_unified = combined_unified.drop(columns=["_CanonicalTransactionKey"])
 
     # Do not de-duplicate solely by UnifiedID.

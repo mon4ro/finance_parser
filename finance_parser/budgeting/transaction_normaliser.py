@@ -38,7 +38,7 @@ TARGET_FIELD_BY_SET_COLUMN = {
     "SetSubcategory": "Subcategory",
     "SetComments": "Review/Notes",
     "SetReviewNotes": "Review/Notes",
-
+    "SetTransferScope": "TransferScope",
 }
 
 VALID_MATCH_TYPES = {

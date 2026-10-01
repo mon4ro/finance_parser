@@ -107,6 +107,17 @@ UNIFIED_COLUMNS = [
     "ExportDate",
     "ImportedAt",
     "SourceFile",
+    # Appended, not inserted mid-list - Master Budget's formulas reference
+    # UnifiedTransactions columns by absolute letter ($C:$C, $S:$S, etc.);
+    # inserting anywhere else would shift every column after it and break
+    # every live formula. Blank by default (like Supercategory/Category) -
+    # only explicitly set to "INTERNAL" by specific normaliser rules for a
+    # transaction confirmed to move money between two of this household's
+    # own tracked accounts (funding a shared card/buffer account, a joint-
+    # to-personal reallocation). Blank means "no positive evidence either
+    # way", not "confirmed external" - most real income/expenses will
+    # simply never have this set.
+    "TransferScope",
 ]
 # "Balance" and "TransactionTypeRaw" deliberately do NOT live here - removed
 # 2026-09-22 after confirming neither is read from UnifiedTransactions by
@@ -466,18 +477,18 @@ def canonical_source_account(value: object, source_bank: object = "") -> str:
     User/workbook-specific mappings such as NORDEA -> a person's account label,
     OP filename prefixes, or SPANKKI fixed account names belong in
     config/settings.yaml, not in generic parser logic.
+
+    `value` and `source_bank` must be scalars, never a whole row/Series - an
+    earlier version silently accepted a Series here (iterating every
+    non-null field in it and returning the first one that produced a
+    result) specifically to avoid crashing when canonical_transaction_key()
+    passed it an entire row by mistake. That "worked" in the sense of never
+    raising, but silently keyed the result off whatever field happened to
+    come first (RawID, in practice) instead of the actual SourceAccount -
+    see canonical_transaction_key()'s own docstring for the real bug this
+    caused. Fixed at the actual call site instead of papering over it here;
+    removed so the same mistake can't silently "work" again.
     """
-    if isinstance(value, pd.Series):
-        bank_value = "" if isinstance(source_bank, pd.Series) else source_bank
-        for item in value.dropna().tolist():
-            result = canonical_source_account(item, bank_value)
-            if result:
-                return result
-        return ""
-
-    if isinstance(source_bank, pd.Series):
-        source_bank = ""
-
     settings = get_settings()
     bank = settings.canonical_source_bank(source_bank)
     account = normalise_text(value).upper()
@@ -513,9 +524,27 @@ def canonical_transaction_key(row) -> str:
     This protects us when a parser mapping change alters RawID even though the
     underlying bank transaction is the same. We deliberately exclude Description
     and Message because those mappings may change over time.
+
+    Real bug found and fixed: this called canonical_source_account(row) -
+    passing the *entire row* where canonical_source_account() expects a
+    single scalar SourceAccount value. Its Series-handling branch (meant for
+    a genuinely different caller passing a column of candidate account
+    values) then iterated every non-null field in the row and returned the
+    first one that produced a result - RawID is the first column in
+    RAW_COLUMNS, so this silently keyed the "account" component off RawID
+    for every row, in every bank, always. The one guarantee this function's
+    own docstring promises - independent of RawID - was actually false the
+    whole time; RawID leaking in here directly undermined
+    drop_duplicates_against_existing_only()'s ability to recognise the same
+    real transaction re-appearing under a different RawID (confirmed with
+    real data: the same NORWEGIAN transaction, re-exported in a second file
+    with an overlapping date range, was never caught because
+    disambiguate_duplicate_raw_ids() had - correctly - given it a different
+    RawID, which then leaked into a canonical key that was supposed to
+    ignore RawID entirely).
     """
     bank = canonical_source_bank(row)
-    account = canonical_source_account(row)
+    account = canonical_source_account(row.get("SourceAccount", ""), bank)
     date = format_date(row.get("ValueDate", row.get("Date", "")))
     amount = normalise_amount(row.get("Amount", 0))
     receiver = normalise_text(row.get("RawReceiver", "")).upper()
@@ -623,6 +652,51 @@ def merge_blank_metadata_before_dedup(df: pd.DataFrame) -> pd.DataFrame:
     return out
 
 
+def drop_duplicates_against_existing_only(
+    combined: pd.DataFrame, n_existing: int, key_col: str = "_CanonicalTransactionKey"
+) -> pd.DataFrame:
+    """
+    Deduplicate `combined` (== pd.concat([existing, new_rows], ignore_index=True),
+    with n_existing == len(existing)) by key_col - but only ever drop a "new" row
+    for matching something already present in "existing" before this run. Two
+    rows both freshly parsed in this same run are never deduplicated against
+    each other, no matter how similar their canonical key makes them look.
+
+    Real bug this fixed: canonical_transaction_key() exists to stop the same
+    real bank record from being counted twice when a file (or an overlapping
+    file) gets re-imported - it protects against re-import, not against a
+    bank's own real row count within a single genuine export. A blind
+    drop_duplicates() across the whole combined set collapsed two (or three)
+    genuinely separate real transactions that happened to share date, amount,
+    and receiver within ONE freshly-parsed import - confirmed with real
+    NORWEGIAN data: two round-trip airline seats billed as two separate
+    identically-priced charges the same day, and several bars/petrol stations
+    where two or three back-to-back purchases landed on an identical round
+    price. For a bank export with no richer per-row reference (NORWEGIAN carries none),
+    canonical-key equality is not proof of duplication - only equality against
+    something that already existed before this run is.
+
+    Existing rows are never dropped here, including against each other:
+    once several genuinely separate real transactions sharing a canonical
+    key have been accepted into the sheet on some earlier run, a later run
+    must not silently re-collapse them back down just because they still
+    share that key - the exact same reasoning above, applied a run later.
+    A row already accepted into the ledger is not re-examined; only whether
+    an incoming new row restates
+    something already there is ever in question.
+    """
+    if len(combined) == 0:
+        return combined
+
+    is_existing = combined.index < n_existing
+    existing_keys = set(combined.loc[is_existing, key_col])
+
+    keep = pd.Series(True, index=combined.index)
+    keep.loc[~is_existing] = ~combined.loc[~is_existing, key_col].isin(existing_keys)
+
+    return combined.loc[keep]
+
+
 def default_include_for_row(row) -> str:
     """
     Default Include value for new UnifiedTransactions rows.
@@ -722,6 +796,7 @@ def raw_to_unified_rows(raw_new: pd.DataFrame) -> pd.DataFrame:
             "ExportDate": row["ExportDate"],
             "ImportedAt": row["ImportedAt"],
             "SourceFile": row["SourceFile"],
+            "TransferScope": "",
         })
 
     return pd.DataFrame(rows, columns=UNIFIED_COLUMNS)
