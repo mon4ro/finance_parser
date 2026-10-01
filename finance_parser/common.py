@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import calendar
 import csv
 import hashlib
 import io
@@ -9,7 +10,7 @@ import uuid
 import shutil
 import zipfile
 import xml.etree.ElementTree as ET
-from datetime import datetime
+from datetime import date, datetime
 from pathlib import Path
 from typing import Iterable
 
@@ -418,6 +419,84 @@ def infer_source_account_from_filename(path: Path, source_bank: str) -> str:
     cleaned = re.sub(r"^TILI\s+", "", cleaned).strip()
 
     return cleaned or bank
+
+
+_DATE_RANGE_RE = re.compile(r"(\d{8})-(\d{8})")
+_SINGLE_DATE_RE = re.compile(r"(?<!\d)(\d{8})(?!\d)")
+_MONTH_ONLY_RE = re.compile(r"(?<!\d)(\d{6})(?!\d)")
+
+
+def _plausible_coverage_date(candidate: date, today: date) -> date | None:
+    # Generous on both sides - this household's own real backfills reach
+    # back to 2022, and "the future" only needs to tolerate a same-day
+    # export - but a transposed/garbled digit producing a date decades off
+    # or genuinely in the future is almost certainly a typo, not real bank
+    # coverage, and trusting it blindly would be worse than falling back to
+    # "no information" (the caller's existing conservative behaviour).
+    if candidate > today:
+        return None
+    if candidate.year < today.year - 20:
+        return None
+    return candidate
+
+
+def extract_query_end_date_from_filename(filename: str, *, today: date | None = None) -> date | None:
+    """
+    Best-effort: the LATEST date a bank-export filename's own naming
+    convention claims to cover (e.g. "..._20260501-20260603.csv" ->
+    2026-06-03; a lone "..._202606.xlsx" -> the last day of June 2026).
+
+    Used only to RELAX an existing conservative safeguard (see
+    _reliable_reconstructed_months() in build_monthly_account_balance.py),
+    never to assert anything on its own - so this degrades to None (meaning
+    "no new information, fall back to the existing conservative behaviour")
+    on anything it isn't confident about, rather than guess:
+    - no 8-digit (or 6-digit) digit run found at all in the filename
+    - a digit run that isn't a real calendar date (e.g. a typo producing
+      month 13 or day 32) - calendar construction failing is caught here,
+      never raised up to the caller
+    - a date implausibly far in the future or the past (see
+      _plausible_coverage_date) - catches a gross typo/digit transposition
+      without needing to be perfect about subtler ones
+
+    A caller combining this across many files should always take the max
+    and never let one file's unparseable/implausible name override an
+    earlier file's valid one - see imported_through_by_account() in
+    build_monthly_account_balance.py.
+    """
+    today = today or date.today()
+    stem = Path(filename).stem
+
+    pairs = _DATE_RANGE_RE.findall(stem)
+    if pairs:
+        token = max(p[1] for p in pairs)
+        try:
+            candidate = date(int(token[:4]), int(token[4:6]), int(token[6:8]))
+        except ValueError:
+            return None
+        return _plausible_coverage_date(candidate, today)
+
+    singles = _SINGLE_DATE_RE.findall(stem)
+    if singles:
+        token = max(singles)
+        try:
+            candidate = date(int(token[:4]), int(token[4:6]), int(token[6:8]))
+        except ValueError:
+            return None
+        return _plausible_coverage_date(candidate, today)
+
+    months = _MONTH_ONLY_RE.findall(stem)
+    if months:
+        token = max(months)
+        year, month = int(token[:4]), int(token[4:6])
+        if not 1 <= month <= 12:
+            return None
+        last_day = calendar.monthrange(year, month)[1]
+        candidate = date(year, month, last_day)
+        return _plausible_coverage_date(candidate, today)
+
+    return None
+
 
 def stable_hash(parts: Iterable[object], length: int = DEFAULT_HASH_LENGTH) -> str:
     joined = "|".join(normalise_text(p).upper() for p in parts)

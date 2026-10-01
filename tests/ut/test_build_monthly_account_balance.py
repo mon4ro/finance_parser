@@ -16,7 +16,13 @@ RAW_COLUMNS = [
 ]
 
 
-def _write_raw(path, rows, owners=None):
+IMPORT_LOG_COLUMNS = [
+    "ImportRunID", "ImportedAt", "SourceBank", "SourceFile",
+    "RowsRead", "RowsNew", "RowsDuplicate", "Status", "Error",
+]
+
+
+def _write_raw(path, rows, owners=None, import_log=None):
     wb = Workbook()
     ws = wb.active
     ws.title = "RawTransactions"
@@ -31,6 +37,16 @@ def _write_raw(path, rows, owners=None):
         unified_ws.append(["SourceAccount", "Owner"])
         for account, owner in owners.items():
             unified_ws.append([account, owner])
+
+    if import_log:
+        log_ws = wb.create_sheet("ImportLog")
+        log_ws.append(IMPORT_LOG_COLUMNS)
+        for i, row in enumerate(import_log):
+            row = {**row}
+            row.setdefault("ImportRunID", f"RUN-{i}")
+            row.setdefault("ImportedAt", "2026-01-01 00:00:00")
+            row.setdefault("Status", "Imported")
+            log_ws.append([row.get(h, "") for h in IMPORT_LOG_COLUMNS])
 
     wb.save(path)
 
@@ -546,3 +562,154 @@ budgeting:
 
     rows = result[result["SourceAccount"] == "CHILD"]
     assert list(rows["MonthEnd"]) == ["2026-03-31"]
+
+
+def test_imported_through_bridges_a_confirmed_dormant_gap(tmp_path):
+    """
+    Same real gap as test_reconstructed_forward_reconstruction_also_stops_
+    at_first_gap (March 2026: zero real transactions) - but this time
+    ImportLog has a real entry proving a file covering through 2026-04-30
+    was actually parsed (RowsRead=0, i.e. genuinely confirmed dormant, not
+    just never checked). March and April must now be trusted; May must
+    NOT be, since nothing confirms coverage that far.
+    """
+    path = tmp_path / "ParsedTransactions.xlsx"
+    _write_raw(
+        path,
+        [
+            {"SourceAccount": "HOUSEHOLD", "SourceBank": "OP", "BookingDate": "2026-01-15", "Amount": -10},
+            {"SourceAccount": "HOUSEHOLD", "SourceBank": "OP", "BookingDate": "2026-02-05", "Amount": -20},
+            # 2026-03: genuinely zero transactions, but confirmed checked (see ImportLog below).
+            {"SourceAccount": "HOUSEHOLD", "SourceBank": "OP", "BookingDate": "2026-04-10", "Amount": 40},
+            {"SourceAccount": "HOUSEHOLD", "SourceBank": "OP", "BookingDate": "2026-05-05", "Amount": 5},
+        ],
+        import_log=[
+            {
+                "SourceBank": "OP",
+                "SourceFile": "Tili_HOUSEHOLD_tapahtumat20260301-20260430.csv",
+                "RowsRead": 0,
+                "Status": "Parsed",
+            },
+        ],
+    )
+    settings = _settings_with_seeds(
+        """
+budgeting:
+  account_balance_seeds:
+    HOUSEHOLD:
+      "2026-01-15": 1000.0
+""",
+        tmp_path,
+    )
+
+    result, stats = build_monthly_balances(path, settings, as_of=date(2026, 6, 1))
+
+    rows = result[result["SourceAccount"] == "HOUSEHOLD"]
+    by_month = set(rows["MonthEnd"])
+    assert "2026-01-31" in by_month
+    assert "2026-02-28" in by_month
+    assert "2026-03-31" in by_month  # now trusted - confirmed dormant, not an unimported gap
+    assert "2026-04-30" in by_month  # also now reachable
+    assert "2026-05-31" not in by_month  # confirmed-through doesn't reach this far
+    assert stats["imported_through"]["HOUSEHOLD"] == "2026-04-30"
+
+
+def test_unconfirmed_gap_is_still_withheld_exactly_as_before(tmp_path):
+    """
+    Pure regression guard: with NO ImportLog evidence at all (the existing
+    default), behaviour must be byte-identical to before this feature
+    existed - this is the exact same scenario as
+    test_reconstructed_forward_reconstruction_also_stops_at_first_gap.
+    """
+    path = tmp_path / "ParsedTransactions.xlsx"
+    _write_raw(path, [
+        {"SourceAccount": "HOUSEHOLD", "SourceBank": "OP", "BookingDate": "2026-01-15", "Amount": -10},
+        {"SourceAccount": "HOUSEHOLD", "SourceBank": "OP", "BookingDate": "2026-02-05", "Amount": -20},
+        {"SourceAccount": "HOUSEHOLD", "SourceBank": "OP", "BookingDate": "2026-04-10", "Amount": 40},
+        {"SourceAccount": "HOUSEHOLD", "SourceBank": "OP", "BookingDate": "2026-05-05", "Amount": 5},
+    ])
+    settings = _settings_with_seeds(
+        """
+budgeting:
+  account_balance_seeds:
+    HOUSEHOLD:
+      "2026-01-15": 1000.0
+""",
+        tmp_path,
+    )
+
+    result, stats = build_monthly_balances(path, settings, as_of=date(2026, 6, 1))
+
+    rows = result[result["SourceAccount"] == "HOUSEHOLD"]
+    by_month = set(rows["MonthEnd"])
+    assert "2026-03-31" not in by_month
+    assert "2026-04-30" not in by_month
+    assert stats["imported_through"] == {}
+
+
+def test_import_log_entry_with_no_rows_still_confirms_a_dormant_file_was_checked(tmp_path):
+    """
+    The whole point of using ImportLog rather than real transaction dates:
+    a file that was successfully parsed but produced zero NEW rows (fully
+    duplicate, or genuinely empty) must still count as real evidence the
+    account was checked through that date - matches real ImportLog rows
+    this session found (RowsRead=0, Status="Parsed").
+    """
+    path = tmp_path / "ParsedTransactions.xlsx"
+    _write_raw(
+        path,
+        [
+            {"SourceAccount": "HOUSEHOLD", "SourceBank": "OP", "BookingDate": "2026-01-15", "Amount": -10},
+        ],
+        import_log=[
+            {
+                "SourceBank": "OP",
+                "SourceFile": "Tili_HOUSEHOLD_tapahtumat20260101-20260930.csv",
+                "RowsRead": 0,
+                "RowsNew": 0,
+                "Status": "Parsed",
+            },
+        ],
+    )
+    settings = _settings_with_seeds(
+        """
+budgeting:
+  account_balance_seeds:
+    HOUSEHOLD:
+      "2026-01-15": 1000.0
+""",
+        tmp_path,
+    )
+
+    result, stats = build_monthly_balances(path, settings, as_of=date(2026, 10, 1))
+
+    rows = result[result["SourceAccount"] == "HOUSEHOLD"]
+    assert "2026-09-30" in set(rows["MonthEnd"])
+    assert stats["imported_through"]["HOUSEHOLD"] == "2026-09-30"
+
+
+def test_cash_and_investment_dividend_sources_are_excluded_from_imported_through(tmp_path):
+    """
+    CASH is a hand-typed ledger (no import-lag ambiguity to solve) and
+    INVESTMENT_DIVIDEND rows are synthetic, not a real account import -
+    neither should produce a bogus imported_through entry.
+    """
+    path = tmp_path / "ParsedTransactions.xlsx"
+    _write_raw(
+        path,
+        [
+            {"SourceAccount": "CASH", "SourceBank": "CASH", "BookingDate": "2026-01-15", "Amount": -10},
+        ],
+        import_log=[
+            {"SourceBank": "CASH", "SourceFile": "CashEntries_20260101-20260930.xlsx", "RowsRead": 1, "Status": "Imported"},
+            {"SourceBank": "INVESTMENT_DIVIDEND", "SourceFile": "DividendHistory_20260101-20260930.xlsx", "RowsRead": 1, "Status": "Imported"},
+        ],
+    )
+    settings = _settings_with_seeds(
+        'budgeting:\n  account_balance_seeds:\n    CASH:\n      "2026-01-01": 0\n',
+        tmp_path,
+    )
+
+    _, stats = build_monthly_balances(path, settings, as_of=date(2026, 10, 1))
+
+    assert stats["imported_through"] == {}

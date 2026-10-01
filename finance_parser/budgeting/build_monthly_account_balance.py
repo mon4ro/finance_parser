@@ -14,7 +14,15 @@ from finance_parser.budgeting.account_balance_seed import (
     owner_lookup,
 )
 from finance_parser.budgeting.parsers.investment_dividends import SOURCE_BANK as INVESTMENT_DIVIDEND_SOURCE_BANK
-from finance_parser.common import KATEVARAUS_TRANSACTION_TYPES
+from finance_parser.common import (
+    IMPORT_LOG_COLUMNS,
+    IMPORT_LOG_SHEET,
+    KATEVARAUS_TRANSACTION_TYPES,
+    extract_query_end_date_from_filename,
+    infer_source_account_from_filename,
+    normalise_text,
+    sheet_to_dataframe,
+)
 from finance_parser.settings import AppSettings, get_settings
 from finance_parser.utilities.fresh_workbook_writer import (
     records_to_sheet_values,
@@ -31,6 +39,59 @@ MONTHLY_BALANCE_COLUMNS = ["MonthEnd", "Year", "Month", "SourceAccount", "Source
 
 RAW_EXPORT_SOURCE = "RAW_EXPORT"
 RECONSTRUCTED_SOURCE = "RECONSTRUCTED"
+
+# Only real bank-export sources carry a filename this can learn anything
+# from - CASH (a hand-typed ledger, not an import with a lag) and
+# INVESTMENT_DIVIDEND (synthetic rows, not a real account import) are
+# deliberately excluded rather than fed through infer_source_account_from_
+# filename(), which isn't meant for either.
+_IMPORTED_THROUGH_BANKS = {"OP", "NORDEA", "NORWEGIAN", "SPANKKI"}
+_IMPORTED_THROUGH_STATUSES = {"Imported", "Parsed"}
+
+
+def imported_through_by_account(budgeting_workbook: Path) -> dict[str, date]:
+    """
+    Best-effort "confirmed complete through" watermark per SourceAccount,
+    derived entirely from ImportLog + each already-processed file's own
+    filename - no new manual bookkeeping step. ImportLog already logs
+    every file a parser successfully ran against, including ones that
+    produced zero new rows (Status "Parsed"/"Imported" either way), so a
+    genuinely dormant month that was still actually checked leaves a real
+    trace here, distinct from a month nobody has imported yet at all.
+
+    Deliberately additive-only: a file this can't confidently derive a
+    date or account from (see extract_query_end_date_from_filename)
+    contributes nothing rather than guessing, so the caller's existing
+    conservative behaviour is always the floor, never weakened by a bad
+    filename - only ever extended by a good one.
+    """
+    df = sheet_to_dataframe(budgeting_workbook, IMPORT_LOG_SHEET, IMPORT_LOG_COLUMNS)
+    result: dict[str, date] = {}
+    if len(df) == 0:
+        return result
+
+    for _, row in df.iterrows():
+        bank = normalise_text(row.get("SourceBank", "")).upper()
+        if bank not in _IMPORTED_THROUGH_BANKS:
+            continue
+        if normalise_text(row.get("Status", "")) not in _IMPORTED_THROUGH_STATUSES:
+            continue
+        filename = normalise_text(row.get("SourceFile", ""))
+        if not filename:
+            continue
+
+        end_date = extract_query_end_date_from_filename(filename)
+        if end_date is None:
+            continue
+
+        account = infer_source_account_from_filename(Path(filename), bank)
+        if not account:
+            continue
+
+        if account not in result or end_date > result[account]:
+            result[account] = end_date
+
+    return result
 
 # KATEVARAUS_TRANSACTION_TYPES now lives in common.py - raw_to_unified_rows()
 # also needs it (to keep a pending hold out of UnifiedTransactions entirely),
@@ -73,7 +134,11 @@ def _has_continuous_coverage(seed_period: pd.Period, target_period: pd.Period, a
 
 
 def _reliable_reconstructed_months(
-    group: pd.DataFrame, months: pd.DatetimeIndex, seeds: list[tuple[str, float]]
+    group: pd.DataFrame,
+    months: pd.DatetimeIndex,
+    seeds: list[tuple[str, float]],
+    *,
+    imported_through: date | None = None,
 ) -> pd.DatetimeIndex:
     """
     Filters candidate month-ends down to ones connected to their applicable
@@ -88,9 +153,19 @@ def _reliable_reconstructed_months(
     identical to an unimported gap from the data alone, so this is
     deliberately conservative - it may withhold a real, correct month rather
     than risk a wrong one.
+
+    imported_through (optional, see imported_through_by_account()): a
+    forward-direction month (target_period >= seed_period) at or before
+    this confirmed-complete watermark is trusted even across a zero-
+    transaction gap, since the gap is now known to be genuine dormancy
+    rather than an unimported stretch. Backward-direction months (before
+    the earliest seed) are unaffected - imported_through only vouches for
+    data actually confirmed imported forward from a seed, not for
+    pre-seed history.
     """
     seed_periods = sorted({pd.Timestamp(d).to_period("M") for d, _ in seeds})
     active_months = set(group["_Date"].dt.to_period("M"))
+    imported_through_period = pd.Timestamp(imported_through).to_period("M") if imported_through else None
 
     reliable = []
     for month_end in months:
@@ -99,6 +174,12 @@ def _reliable_reconstructed_months(
         seed_period = applicable[-1] if applicable else seed_periods[0]
 
         if _has_continuous_coverage(seed_period, target_period, active_months):
+            reliable.append(month_end)
+        elif (
+            imported_through_period is not None
+            and target_period >= seed_period
+            and target_period <= imported_through_period
+        ):
             reliable.append(month_end)
 
     return pd.DatetimeIndex(reliable)
@@ -199,6 +280,7 @@ def build_monthly_balances(
         "accounts_processed": [],
         "accounts_no_seed_configured": [],
         "accounts_raw_export_no_balance_data": [],
+        "imported_through": {},
     }
 
     if len(df) == 0:
@@ -211,6 +293,8 @@ def build_monthly_balances(
         df["_Balance"] = pd.NA
 
     last_month_end = last_completed_month_end(as_of or date.today())
+    imported_through = imported_through_by_account(budgeting_workbook)
+    stats["imported_through"] = {account: d.isoformat() for account, d in imported_through.items()}
     rows: list[dict] = []
 
     for account, group in df.groupby("SourceAccount"):
@@ -239,6 +323,7 @@ def build_monthly_balances(
 
         earliest_transaction_date = group["_Date"].iloc[0]
         latest_transaction_date = group["_Date"].iloc[-1]
+        confirmed_through = imported_through.get(account)
         # A month-end is only trustworthy once there's evidence the import
         # continued past it (a real transaction dated after it) - not just
         # because the calendar says the month is over. Real bug this fixes:
@@ -248,7 +333,16 @@ def build_monthly_balances(
         # imported yet. Capping here (rather than only via last_month_end)
         # means date_range's own upper bound naturally excludes any
         # not-yet-confirmed trailing month.
-        account_last_month_end = min(last_month_end, latest_transaction_date)
+        #
+        # confirmed_through (see imported_through_by_account()) extends that
+        # cap past the latest real transaction when a later file was
+        # actually imported for this account and genuinely contained no new
+        # transactions (a confirmed-dormant month) - never beyond
+        # last_month_end regardless.
+        candidate_last_month_end = latest_transaction_date
+        if confirmed_through is not None:
+            candidate_last_month_end = max(candidate_last_month_end, pd.Timestamp(confirmed_through))
+        account_last_month_end = min(last_month_end, candidate_last_month_end)
 
         banks = set(group["SourceBank"].unique())
         is_raw_export_account = bool(banks) and banks.issubset(BALANCE_FROM_RAW_EXPORT_BANKS)
@@ -292,7 +386,9 @@ def build_monthly_balances(
             # safety check is skipped.
             months = candidate_months
         else:
-            months = _reliable_reconstructed_months(group, candidate_months, seeds)
+            months = _reliable_reconstructed_months(
+                group, candidate_months, seeds, imported_through=confirmed_through
+            )
         account_rows = _reconstructed_balance_rows(account, bank, group, months, seeds, owners)
         if account_rows:
             stats["accounts_processed"].append(account)
@@ -360,6 +456,13 @@ def main() -> None:
         print("found (no monthly rows produced) - check the raw export actually has it:")
         for account in stats["accounts_raw_export_no_balance_data"]:
             print(f"  - {account}")
+
+    if stats["imported_through"]:
+        print()
+        print("Confirmed-imported-through dates (derived from ImportLog + filenames - sanity")
+        print("check these against what you actually imported before trusting them):")
+        for account, through_date in sorted(stats["imported_through"].items()):
+            print(f"  - {account}: {through_date}")
 
     if args.dry_run:
         print()
