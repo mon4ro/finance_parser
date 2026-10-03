@@ -1,6 +1,6 @@
 from datetime import date
 
-from finance_parser.common import extract_query_end_date_from_filename
+from finance_parser.common import extract_query_date_range_from_filename, extract_query_end_date_from_filename
 
 
 _TODAY = date(2026, 10, 1)
@@ -82,3 +82,41 @@ def test_multiple_date_ranges_in_one_filename_uses_the_latest():
     assert extract_query_end_date_from_filename(
         "merged_20260101-20260201_and_20260201-20260301.csv", today=_TODAY
     ) == date(2026, 3, 1)
+
+
+def test_range_extractor_returns_matching_start_and_end():
+    assert extract_query_date_range_from_filename(
+        "Tili_PERSON_A_tapahtumat20260601-20260722.csv", today=_TODAY
+    ) == (date(2026, 6, 1), date(2026, 7, 22))
+
+
+def test_range_extractor_single_date_is_a_zero_width_range():
+    assert extract_query_date_range_from_filename(
+        "Tili_S-PANKKI_20260819.csv", today=_TODAY
+    ) == (date(2026, 8, 19), date(2026, 8, 19))
+
+
+def test_range_extractor_month_only_spans_the_whole_month():
+    assert extract_query_date_range_from_filename(
+        "NORWEGIAN_Statement-202606.xlsx", today=_TODAY
+    ) == (date(2026, 6, 1), date(2026, 6, 30))
+
+
+def test_range_extractor_rejects_a_reversed_range():
+    """A start-after-end range is definitely a garbled filename, not real
+    coverage - must degrade to None, not silently swap the two."""
+    assert extract_query_date_range_from_filename(
+        "Tili_PERSON_A_tapahtumat20260722-20260601.csv", today=_TODAY
+    ) is None
+
+
+def test_range_extractor_multiple_ranges_picks_the_pair_with_the_latest_end():
+    """Must pick the END's own matching START, not mix start from one pair
+    with end from a different one."""
+    assert extract_query_date_range_from_filename(
+        "merged_20260101-20260201_and_20260215-20260301.csv", today=_TODAY
+    ) == (date(2026, 2, 15), date(2026, 3, 1))
+
+
+def test_range_extractor_no_date_returns_none():
+    assert extract_query_date_range_from_filename("S-PANKKI_export.csv", today=_TODAY) is None

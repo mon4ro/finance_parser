@@ -440,41 +440,48 @@ def _plausible_coverage_date(candidate: date, today: date) -> date | None:
     return candidate
 
 
-def extract_query_end_date_from_filename(filename: str, *, today: date | None = None) -> date | None:
+def extract_query_date_range_from_filename(
+    filename: str, *, today: date | None = None
+) -> tuple[date, date] | None:
     """
-    Best-effort: the LATEST date a bank-export filename's own naming
-    convention claims to cover (e.g. "..._20260501-20260603.csv" ->
-    2026-06-03; a lone "..._202606.xlsx" -> the last day of June 2026).
+    Best-effort: the (start, end) date range a bank-export filename's own
+    naming convention claims to cover (e.g. "..._20260501-20260603.csv" ->
+    (2026-05-01, 2026-06-03); a lone "..._202606.xlsx" -> the full month of
+    June 2026; a single bare date -> a zero-width range on that one day).
 
-    Used only to RELAX an existing conservative safeguard (see
-    _reliable_reconstructed_months() in build_monthly_account_balance.py),
-    never to assert anything on its own - so this degrades to None (meaning
-    "no new information, fall back to the existing conservative behaviour")
-    on anything it isn't confident about, rather than guess:
+    Never asserts anything on its own - degrades to None (meaning "no new
+    information") on anything it isn't confident about, rather than guess:
     - no 8-digit (or 6-digit) digit run found at all in the filename
     - a digit run that isn't a real calendar date (e.g. a typo producing
       month 13 or day 32) - calendar construction failing is caught here,
       never raised up to the caller
-    - a date implausibly far in the future or the past (see
-      _plausible_coverage_date) - catches a gross typo/digit transposition
-      without needing to be perfect about subtler ones
+    - either end implausibly far in the future or the past (see
+      _plausible_coverage_date), or a reversed range (start after end) -
+      catches a gross typo/digit transposition without needing to be
+      perfect about subtler ones
 
-    A caller combining this across many files should always take the max
-    and never let one file's unparseable/implausible name override an
-    earlier file's valid one - see imported_through_by_account() in
-    build_monthly_account_balance.py.
+    A caller combining results across many files should always prefer the
+    latest end date and never let one file's unparseable/implausible name
+    override an earlier file's valid one - see imported_through_by_account()
+    in build_monthly_account_balance.py and find_overlapping_import_windows()
+    below, both built on this.
     """
     today = today or date.today()
     stem = Path(filename).stem
 
     pairs = _DATE_RANGE_RE.findall(stem)
     if pairs:
-        token = max(p[1] for p in pairs)
+        start_token, end_token = max(pairs, key=lambda pair: pair[1])
         try:
-            candidate = date(int(token[:4]), int(token[4:6]), int(token[6:8]))
+            start = date(int(start_token[:4]), int(start_token[4:6]), int(start_token[6:8]))
+            end = date(int(end_token[:4]), int(end_token[4:6]), int(end_token[6:8]))
         except ValueError:
             return None
-        return _plausible_coverage_date(candidate, today)
+        if _plausible_coverage_date(start, today) is None or _plausible_coverage_date(end, today) is None:
+            return None
+        if start > end:
+            return None
+        return (start, end)
 
     singles = _SINGLE_DATE_RE.findall(stem)
     if singles:
@@ -483,7 +490,9 @@ def extract_query_end_date_from_filename(filename: str, *, today: date | None = 
             candidate = date(int(token[:4]), int(token[4:6]), int(token[6:8]))
         except ValueError:
             return None
-        return _plausible_coverage_date(candidate, today)
+        if _plausible_coverage_date(candidate, today) is None:
+            return None
+        return (candidate, candidate)
 
     months = _MONTH_ONLY_RE.findall(stem)
     if months:
@@ -492,10 +501,144 @@ def extract_query_end_date_from_filename(filename: str, *, today: date | None = 
         if not 1 <= month <= 12:
             return None
         last_day = calendar.monthrange(year, month)[1]
-        candidate = date(year, month, last_day)
-        return _plausible_coverage_date(candidate, today)
+        end = date(year, month, last_day)
+        if _plausible_coverage_date(end, today) is None:
+            return None
+        return (date(year, month, 1), end)
 
     return None
+
+
+def extract_query_end_date_from_filename(filename: str, *, today: date | None = None) -> date | None:
+    """Thin wrapper over extract_query_date_range_from_filename() - see its
+    docstring for the full matching/bounds-checking rules."""
+    date_range = extract_query_date_range_from_filename(filename, today=today)
+    return date_range[1] if date_range else None
+
+
+# Only real bank-export sources carry a filename this can learn anything
+# from - CASH (a hand-typed ledger, not an import with a lag) and
+# INVESTMENT_DIVIDEND (synthetic rows, not a real account import) are
+# deliberately excluded, matching build_monthly_account_balance.py's own
+# _IMPORTED_THROUGH_BANKS.
+_FILENAME_DATED_BANKS = {"OP", "NORDEA", "NORWEGIAN", "SPANKKI"}
+
+
+def _import_windows_by_account(import_log: pd.DataFrame) -> dict[str, dict[str, tuple[date, date]]]:
+    """Shared helper for find_overlapping_import_windows(): one window per
+    unique SourceFile per account, deduped (the same file can legitimately
+    appear in ImportLog more than once across separate past import runs -
+    that must never multiply into repeated warnings for what is really
+    just one file)."""
+    windows_by_account: dict[str, dict[str, tuple[date, date]]] = {}
+
+    for _, row in import_log.iterrows():
+        if normalise_text(row.get("Status", "")) not in {"Imported", "Parsed"}:
+            continue
+        bank = normalise_text(row.get("SourceBank", "")).upper()
+        if bank not in _FILENAME_DATED_BANKS:
+            continue
+        filename = normalise_text(row.get("SourceFile", ""))
+        if not filename:
+            continue
+
+        date_range = extract_query_date_range_from_filename(filename)
+        if date_range is None:
+            continue
+
+        account = infer_source_account_from_filename(Path(filename), bank)
+        if not account:
+            continue
+
+        windows_by_account.setdefault(account, {})[filename] = date_range
+
+    return windows_by_account
+
+
+def _windows_overlap(a: tuple[date, date], b: tuple[date, date]) -> bool:
+    # A single shared boundary day (this household's own real re-export
+    # convention: one file ends where the next starts, e.g.
+    # "...20260601-20260722.csv" then "...20260722-20260819.csv") is
+    # normal, not a bug - only a GENUINE multi-day overlap is worth
+    # flagging.
+    overlap_start = max(a[0], b[0])
+    overlap_end = min(a[1], b[1])
+    return overlap_start < overlap_end
+
+
+def find_overlapping_import_windows(
+    existing_log: pd.DataFrame, new_log: pd.DataFrame
+) -> list[tuple[str, tuple[str, date, date], tuple[str, date, date]]]:
+    """
+    Flags every pair of successfully-parsed files for the SAME account
+    whose filename-claimed date ranges overlap, where AT LEAST ONE file in
+    the pair is genuinely new - its filename has never appeared in
+    existing_log before this run - pure detection/reporting, never
+    merges, drops, or alters a single row. Deliberately never treats a
+    file as "new" just because it shows up in new_log: a file still
+    sitting in the input folder gets re-parsed (and so re-logged) on
+    EVERY run even long after it was first imported, so new_log alone
+    can't tell "just arrived" apart from "re-parsed again today, same as
+    every other day". Without this, a purely historical overlap (e.g. a
+    multi-year backfill file whose range happens to intersect an old
+    month-by-month file, both imported long ago but both still sitting in
+    the input folder) would get re-flagged on every single future run
+    forever, burying the one warning that actually matters in noise -
+    confirmed against this household's own real workbook, which hit
+    exactly this.
+
+    Real motivating case (2026-10-01): two real Norwegian exports covering
+    the same days described the identical transaction with different
+    Text AND Type, which existing RawID/canonical-key dedup (keyed partly
+    on receiver text) couldn't recognise as the same event - the result
+    was silently double-counted. A blind date+amount merge would be worse
+    (see disambiguate_duplicate_raw_ids's own documented same-day-same-
+    amount airline-seats case - two genuinely separate transactions must
+    never be collapsed just because they look alike), so this only ever
+    surfaces an overlap for a human to check, same as the parser's other
+    warnings (unsupported file, format drift).
+
+    existing_log/new_log take the same shape ImportLog itself has
+    (SourceBank, SourceFile, Status columns).
+
+    A single shared boundary day (see _windows_overlap) is normal and
+    deliberately NOT flagged; only a genuine multi-day overlap is.
+    """
+    existing_windows = _import_windows_by_account(existing_log)
+    new_windows = _import_windows_by_account(new_log)
+
+    overlaps: list[tuple[str, tuple[str, date, date], tuple[str, date, date]]] = []
+    for account, account_new_windows in new_windows.items():
+        account_existing_windows = existing_windows.get(account, {})
+
+        # A file still sitting in the input folder gets re-parsed (and so
+        # re-logged into new_log) on every single run, even long after it
+        # was first imported - that must not count as "new" just because
+        # it happened to be re-parsed again today, or every one of its
+        # already-settled historical overlaps would get re-flagged
+        # forever. Only a filename ImportLog has genuinely never seen
+        # before this run is treated as new.
+        genuinely_new_names = [
+            name for name in account_new_windows if name not in account_existing_windows
+        ]
+
+        # new-vs-new: an overlap introduced entirely within this one batch.
+        for i in range(len(genuinely_new_names)):
+            for j in range(i + 1, len(genuinely_new_names)):
+                name_a, name_b = genuinely_new_names[i], genuinely_new_names[j]
+                window_a, window_b = account_new_windows[name_a], account_new_windows[name_b]
+                if _windows_overlap(window_a, window_b):
+                    overlaps.append((account, (name_a, *window_a), (name_b, *window_b)))
+
+        # new-vs-existing: this batch overlapping something from an
+        # earlier, separate import session.
+        for new_name in genuinely_new_names:
+            new_window = account_new_windows[new_name]
+            for existing_name, existing_window in account_existing_windows.items():
+                if _windows_overlap(new_window, existing_window):
+                    overlaps.append((account, (new_name, *new_window), (existing_name, *existing_window)))
+
+    return overlaps
 
 
 def stable_hash(parts: Iterable[object], length: int = DEFAULT_HASH_LENGTH) -> str:

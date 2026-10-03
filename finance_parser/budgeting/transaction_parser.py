@@ -18,6 +18,7 @@ from finance_parser.common import (
     imported_at_now,
     add_canonical_transaction_key,
     drop_duplicates_against_existing_only,
+    find_overlapping_import_windows,
     make_import_run_id,
     raw_to_unified_rows,
     normalize_source_metadata,
@@ -549,6 +550,18 @@ def append_to_output(
         import_log_new.at[idx, "Status"] = "Imported"
 
     combined_log = pd.concat([existing_log, import_log_new], ignore_index=True)
+
+    overlaps = find_overlapping_import_windows(existing_log, import_log_new)
+    if overlaps:
+        print()
+        print(
+            "WARNING: overlapping import date ranges detected (same account, filename "
+            "date ranges intersect) - not fatal, but check for a double-counted "
+            "transaction (a bank can describe the identical transaction with different "
+            "text/type across two exports, which existing dedup can't always catch):"
+        )
+        for account, (name_a, start_a, end_a), (name_b, start_b, end_b) in overlaps:
+            print(f"  - {account}: {name_a} ({start_a}..{end_a}) overlaps {name_b} ({start_b}..{end_b})")
 
     # Final metadata normalisation is important after duplicate cleanup because
     # the row kept may be an older row with blank SourceBank/SourceAccount.
