@@ -571,6 +571,7 @@ def run_rule_command(
         script=SCRIPT_NAME,
         action=f"--run-rule {rule_id}",
         sheet=UNIFIED_SHEET,
+        workbook=workbook_path,
         rows_updated=len(selected),
         status="Completed",
         details=(
@@ -657,6 +658,7 @@ def replace_unified_sheet_fresh_rebuild(
         script=SCRIPT_NAME,
         action="Apply budgeting transaction rules",
         sheet=UNIFIED_SHEET,
+        workbook=workbook_path,
         rows_updated=stats["fields_updated"],
         status="Completed",
         details=details,

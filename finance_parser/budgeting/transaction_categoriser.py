@@ -712,6 +712,7 @@ def run_rule_workbook(
         script=SCRIPT_NAME,
         action=f"--run-rule {rule_id}",
         sheet=UNIFIED_SHEET,
+        workbook=workbook_path,
         rows_updated=len(selected_changes),
         status="Completed",
         details=(
@@ -803,6 +804,7 @@ def categorise_workbook_fresh_rebuild(
             script=SCRIPT_NAME,
             action=action,
             sheet=UNIFIED_SHEET,
+            workbook=workbook_path,
             rows_updated=len(changes),
             status="Completed",
             details=details,

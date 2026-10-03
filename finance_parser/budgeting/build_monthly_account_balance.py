@@ -15,6 +15,7 @@ from finance_parser.budgeting.account_balance_seed import (
 )
 from finance_parser.budgeting.parsers.investment_dividends import SOURCE_BANK as INVESTMENT_DIVIDEND_SOURCE_BANK
 from finance_parser.common import (
+    CHANGE_LOG_SHEET,
     IMPORT_LOG_COLUMNS,
     IMPORT_LOG_SHEET,
     KATEVARAUS_TRANSACTION_TYPES,
@@ -25,10 +26,15 @@ from finance_parser.common import (
 )
 from finance_parser.settings import AppSettings, get_settings
 from finance_parser.utilities.fresh_workbook_writer import (
+    append_changelog_row,
+    read_workbook_values_only,
     records_to_sheet_values,
     replace_with_fresh_workbook,
     write_fresh_workbook,
 )
+
+
+SCRIPT_NAME = "build_monthly_account_balance.py"
 
 
 PROJECT_ROOT = Path(__file__).resolve().parents[2]
@@ -417,8 +423,48 @@ def build_monthly_balances(
     return result, stats
 
 
-def write_monthly_balance_workbook(output_workbook: Path, monthly_balances: pd.DataFrame) -> None:
-    sheets = {MONTHLY_BALANCE_SHEET: records_to_sheet_values(MONTHLY_BALANCE_COLUMNS, monthly_balances.to_dict("records"))}
+def write_monthly_balance_workbook(
+    output_workbook: Path, monthly_balances: pd.DataFrame, *, stats: dict[str, object] | None = None
+) -> None:
+    """
+    This is a full rebuild every run (the balance table itself is always
+    fully replaced, never incrementally patched) - but ChangeLog is a
+    different sheet in the same workbook and must be carried forward like
+    any other script's fresh rebuild does, or every run before this fix
+    would have silently discarded its own audit trail. Found and fixed
+    2026-10-03: this script wrote no ChangeLog entry at all, the only
+    budgeting pipeline stage with no audit trail despite running on every
+    single pipeline execution.
+    """
+    rows_before = None
+    sheets: dict[str, list[list[object]]] = {}
+    if output_workbook.exists():
+        existing_sheets = read_workbook_values_only(output_workbook)
+        if CHANGE_LOG_SHEET in existing_sheets:
+            sheets[CHANGE_LOG_SHEET] = existing_sheets[CHANGE_LOG_SHEET]
+        if MONTHLY_BALANCE_SHEET in existing_sheets:
+            rows_before = max(len(existing_sheets[MONTHLY_BALANCE_SHEET]) - 1, 0)
+
+    sheets[MONTHLY_BALANCE_SHEET] = records_to_sheet_values(MONTHLY_BALANCE_COLUMNS, monthly_balances.to_dict("records"))
+
+    stats = stats or {}
+    append_changelog_row(
+        sheets,
+        script=SCRIPT_NAME,
+        action="Rebuild monthly account balances",
+        sheet=MONTHLY_BALANCE_SHEET,
+        workbook=output_workbook,
+        rows_before=rows_before,
+        rows_after=len(monthly_balances),
+        rows_updated=len(monthly_balances),
+        status="Completed",
+        details=(
+            f"Accounts with a balance: {len(stats.get('accounts_processed', []))}; "
+            f"no seed configured: {len(stats.get('accounts_no_seed_configured', []))}; "
+            f"raw-export accounts missing balance data: {len(stats.get('accounts_raw_export_no_balance_data', []))}"
+        ),
+        backup_file=None,
+    )
 
     if output_workbook.exists():
         replace_with_fresh_workbook(
@@ -489,7 +535,7 @@ def main() -> None:
         print("Dry run only: workbook was not modified.")
         return
 
-    write_monthly_balance_workbook(output_workbook, monthly_balances)
+    write_monthly_balance_workbook(output_workbook, monthly_balances, stats=stats)
     print()
     print(f"Output workbook: {output_workbook}")
 

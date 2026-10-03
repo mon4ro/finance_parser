@@ -3,8 +3,13 @@ from pathlib import Path
 
 from openpyxl import Workbook
 
+from finance_parser.common import CHANGE_LOG_SHEET
 from finance_parser.settings import AppSettings
-from finance_parser.budgeting.build_monthly_account_balance import build_monthly_balances
+from finance_parser.budgeting.build_monthly_account_balance import (
+    MONTHLY_BALANCE_SHEET,
+    build_monthly_balances,
+    write_monthly_balance_workbook,
+)
 
 
 RAW_COLUMNS = [
@@ -765,3 +770,64 @@ def test_latest_balance_stat_is_empty_when_no_rows_produced(tmp_path):
     _, stats = build_monthly_balances(path, settings, as_of=date(2026, 3, 1))
 
     assert stats["latest_balance"] == {}
+
+
+def _read_changelog_rows(path):
+    import openpyxl
+    wb = openpyxl.load_workbook(path, data_only=True, read_only=True)
+    ws = wb[CHANGE_LOG_SHEET]
+    headers = [c.value for c in next(ws.iter_rows(min_row=1, max_row=1))]
+    return headers, [dict(zip(headers, row)) for row in ws.iter_rows(min_row=2, values_only=True)]
+
+
+def test_write_monthly_balance_workbook_logs_a_changelog_entry_on_first_write(tmp_path):
+    """
+    Real gap this fixes: this script ran on every single pipeline
+    execution but wrote nothing to ChangeLog at all - the only budgeting
+    pipeline stage missing from the audit trail entirely (found
+    2026-10-03).
+    """
+    import pandas as pd
+    output = tmp_path / "MonthlyAccountBalance.xlsx"
+    balances = pd.DataFrame([
+        {"MonthEnd": "2026-01-31", "Year": 2026, "Month": 1, "SourceAccount": "HOUSEHOLD",
+         "SourceBank": "OP", "Owner": "HOUSEHOLD", "Balance": 100.0, "BalanceSource": "RECONSTRUCTED"},
+    ])
+
+    write_monthly_balance_workbook(output, balances, stats={"accounts_processed": ["HOUSEHOLD"]})
+
+    headers, rows = _read_changelog_rows(output)
+    assert len(rows) == 1
+    assert rows[0]["Script"] == "build_monthly_account_balance.py"
+    assert rows[0]["Workbook"] == "MonthlyAccountBalance.xlsx"
+    assert rows[0]["RowsAfter"] == 1
+    assert rows[0]["RowsBefore"] in (None, "")
+    assert rows[0]["ChangeID"]
+
+
+def test_write_monthly_balance_workbook_carries_forward_existing_changelog(tmp_path):
+    import pandas as pd
+    output = tmp_path / "MonthlyAccountBalance.xlsx"
+    first_balances = pd.DataFrame([
+        {"MonthEnd": "2026-01-31", "Year": 2026, "Month": 1, "SourceAccount": "HOUSEHOLD",
+         "SourceBank": "OP", "Owner": "HOUSEHOLD", "Balance": 100.0, "BalanceSource": "RECONSTRUCTED"},
+    ])
+    write_monthly_balance_workbook(output, first_balances, stats={"accounts_processed": ["HOUSEHOLD"]})
+
+    second_balances = pd.DataFrame([
+        {"MonthEnd": "2026-01-31", "Year": 2026, "Month": 1, "SourceAccount": "HOUSEHOLD",
+         "SourceBank": "OP", "Owner": "HOUSEHOLD", "Balance": 100.0, "BalanceSource": "RECONSTRUCTED"},
+        {"MonthEnd": "2026-02-28", "Year": 2026, "Month": 2, "SourceAccount": "HOUSEHOLD",
+         "SourceBank": "OP", "Owner": "HOUSEHOLD", "Balance": 150.0, "BalanceSource": "RECONSTRUCTED"},
+    ])
+    write_monthly_balance_workbook(output, second_balances, stats={"accounts_processed": ["HOUSEHOLD"]})
+
+    _, rows = _read_changelog_rows(output)
+    assert len(rows) == 2
+    assert rows[1]["RowsBefore"] == 1
+    assert rows[1]["RowsAfter"] == 2
+
+    import openpyxl
+    wb = openpyxl.load_workbook(output, data_only=True, read_only=True)
+    balance_ws = wb[MONTHLY_BALANCE_SHEET]
+    assert balance_ws.max_row == 3  # header + 2 data rows - the balance table itself is still fully replaced

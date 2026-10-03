@@ -13,7 +13,7 @@ from openpyxl.styles import Font, PatternFill
 from openpyxl.worksheet.table import Table, TableStyleInfo
 from openpyxl.utils import get_column_letter
 
-from finance_parser.common import clean_for_excel
+from finance_parser.common import CHANGE_LOG_COLUMNS, change_log_timestamp, clean_for_excel, make_change_id
 
 
 REVIEW_STATUS_SHEET = "UnifiedTransactions"
@@ -124,43 +124,45 @@ def append_changelog_row(
     rows_updated: int,
     status: str,
     details: str,
+    workbook: str | Path | None = None,
     backup_file: Path | None = None,
     rows_before: int | None = None,
     rows_after: int | None = None,
+    rows_added: int | None = None,
     rows_removed: int | None = None,
+    review_file: object = None,
 ) -> None:
     """
     Append ChangeLog as values before writing a fresh workbook.
 
     This avoids reopening and saving the workbook after the main write.
-    """
-    default_headers = [
-        "Timestamp",
-        "Script",
-        "Action",
-        "Sheet",
-        "RowsUpdated",
-        "BackupFile",
-        "Status",
-        "Details",
-    ]
 
+    Same row shape as append_change_log_entry() (common.py) - the other
+    function that writes this same sheet, for scripts still using the
+    legacy direct-openpyxl-mutation write path. The two used to diverge
+    (this one had no ChangeID/Workbook/RowsAdded/ReviewFile at all, not
+    because callers chose to omit them but because nothing here ever set
+    them - real inconsistency found by eye on the live sheet, confirmed
+    2026-10-03) - default_headers now matches CHANGE_LOG_COLUMNS exactly,
+    and every column that function fills, this one can too.
+    """
     rows = sheets.get("ChangeLog")
     if not rows:
-        rows = [default_headers]
+        rows = [list(CHANGE_LOG_COLUMNS)]
         sheets["ChangeLog"] = rows
-        headers = default_headers
+        headers = list(CHANGE_LOG_COLUMNS)
     else:
         headers = ["" if value is None else str(value).strip() for value in rows[0]]
         if not any(headers):
-            rows[0] = default_headers
-            headers = default_headers
+            rows[0] = list(CHANGE_LOG_COLUMNS)
+            headers = list(CHANGE_LOG_COLUMNS)
 
     values = {
-        "Timestamp": datetime.now().strftime("%Y-%m-%d %H:%M:%S"),
-        "ChangedAt": datetime.now().strftime("%Y-%m-%d %H:%M:%S"),
+        "ChangeID": make_change_id(),
+        "ChangedAt": change_log_timestamp(),
         "Script": script,
         "Action": action,
+        "Workbook": "" if workbook is None else Path(workbook).name,
         "Sheet": sheet,
         "RowsUpdated": rows_updated,
         "BackupFile": "" if backup_file is None else str(backup_file),
@@ -171,8 +173,12 @@ def append_changelog_row(
         values["RowsBefore"] = rows_before
     if rows_after is not None:
         values["RowsAfter"] = rows_after
+    if rows_added is not None:
+        values["RowsAdded"] = rows_added
     if rows_removed is not None:
         values["RowsRemoved"] = rows_removed
+    if review_file is not None:
+        values["ReviewFile"] = str(review_file)
     rows.append([values.get(header, "") for header in headers])
 
 

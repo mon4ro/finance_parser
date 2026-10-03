@@ -279,6 +279,7 @@ def enrich_dividend_income(
         script=SCRIPT_NAME,
         action="Cross-reference real dividend income against investment DividendHistory",
         sheet=UNIFIED_SHEET,
+        workbook=workbook_path,
         rows_updated=stats["matched"],
         status="Completed",
         details=(

@@ -354,6 +354,7 @@ def main() -> None:
         script=SCRIPT_NAME,
         action=f"Remove import: {args.source_file}",
         sheet=", ".join(stats.keys()),
+        workbook=workbook,
         rows_updated=total_removed,
         rows_removed=total_removed,
         status="Completed",

@@ -354,6 +354,7 @@ def main() -> None:
         script=SCRIPT_NAME,
         action=f"Remove duplicate transaction: {', '.join(plan.remove_raw_ids)}",
         sheet=", ".join(stats.keys()),
+        workbook=args.workbook,
         rows_updated=total_removed,
         rows_removed=total_removed,
         status="Completed",
